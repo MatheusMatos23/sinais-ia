@@ -1,27 +1,29 @@
 """
-app.py — Sinais IA (uso próprio). Painel premium de sinais.
+app.py — Sinais IA (uso próprio). Painel premium de sinais, rápido e robusto.
 
-Sinal: rating de Análise Técnica do TradingView via `tradingview_ta` (servidor).
-Robustez: retry/backoff + cache de "último valor bom" em session_state + FALLBACK
-por yfinance (EMA/RSI/MACD/Bollinger calculados no servidor). O app não cai em
-"indisponível": quando o mercado está aberto, sempre há sinal real.
+Sinal: rating de Análise Técnica do TradingView (`tradingview_ta`). Robustez:
+timeout global de socket (não pendura), poucos retries, cache de "último valor
+bom" por vela em session_state, buscas em PARALELO (ThreadPoolExecutor) e
+FALLBACK por yfinance (EMA/RSI/MACD/Bollinger no servidor).
 
-Regra de exibição: só mostra COMPRA/VENDA quando há ENTRADA (força FRACO/MÉDIO/
-FORTE). Em estado neutro mostra "AGUARDANDO ENTRADA" (cinza, sem direção).
-Entradas indicadas na virada da vela (contador regressivo + destaque).
+Regra: só mostra COMPRA/VENDA quando há ENTRADA (força FRACA/MÉDIA/FORTE); em
+estado neutro mostra "AGUARDANDO". Entradas na virada da vela (contador).
 """
 from __future__ import annotations
 import math
+import socket
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 import streamlit as st
 import streamlit.components.v1 as components
 from streamlit_autorefresh import st_autorefresh
 
+socket.setdefaulttimeout(6)  # nenhuma requisição pendura a UI
+
 st.set_page_config(page_title="Sinais IA", page_icon="⚡", layout="wide")
 
-# --------------------------------------------------------------------------
 ASSETS = [
     {"name": "EUR/USD", "tv": "FX_IDC:EURUSD", "scr": "forex", "yf": "EURUSD=X", "cur": ["EUR", "USD"], "type": "fx"},
     {"name": "GBP/USD", "tv": "FX_IDC:GBPUSD", "scr": "forex", "yf": "GBPUSD=X", "cur": ["GBP", "USD"], "type": "fx"},
@@ -34,6 +36,7 @@ ASSETS = [
     {"name": "BTC/USD", "tv": "BINANCE:BTCUSDT", "scr": "crypto", "yf": "BTC-USD", "cur": [], "type": "crypto"},
     {"name": "ETH/USD", "tv": "BINANCE:ETHUSDT", "scr": "crypto", "yf": "ETH-USD", "cur": [], "type": "crypto"},
 ]
+BY_TV = {a["tv"]: a for a in ASSETS}
 SESSIONS = {"Sydney": (21, 6), "Tóquio": (23, 8), "Londres": (7, 16), "Nova York": (12, 21)}
 CUR_SESS = {"AUD": "Sydney", "NZD": "Sydney", "JPY": "Tóquio", "EUR": "Londres",
             "GBP": "Londres", "CHF": "Londres", "USD": "Nova York", "CAD": "Nova York"}
@@ -59,58 +62,57 @@ def in_win(h, s, e):
 
 
 def active_sessions(d):
-    if not market_open(d):
-        return []
-    return [k for k, (s, e) in SESSIONS.items() if in_win(d.hour, s, e)]
+    return [k for k, (s, e) in SESSIONS.items() if in_win(d.hour, s, e)] if market_open(d) else []
 
 
 def pair_open(a, d):
-    if a["type"] == "crypto":
-        return True
-    return any(CUR_SESS.get(c) in set(active_sessions(d)) for c in a["cur"])
+    return True if a["type"] == "crypto" else any(CUR_SESS.get(c) in set(active_sessions(d)) for c in a["cur"])
 
 
 def candle_key(tf_min):
     return int(math.floor(datetime.now(timezone.utc).timestamp() / 60.0 / tf_min))
 
 
-# --------------------------------------------------------------------------
-# Fonte 1: TradingView (tradingview_ta) — robusto, com retry e last-good
-# --------------------------------------------------------------------------
-def _tv_batch_once(screener, interval_name, symbols):
+# ---------------------- TradingView (paralelo + last-good) ----------------------
+def _tv_once(screener, interval_name, symbols):
     from tradingview_ta import get_multiple_analysis, Interval
     iv = getattr(Interval, interval_name)
     res = get_multiple_analysis(screener=screener, interval=iv, symbols=list(symbols))
     return {k: (v.summary if v else None) for k, v in res.items()}
 
 
+def _fetch_screener(screener, interval_name, symbols):
+    for attempt in range(2):            # poucos retries -> não trava
+        try:
+            return _tv_once(screener, interval_name, symbols)
+        except Exception:
+            time.sleep(0.3)
+    return {}
+
+
 def tv_all(interval_name, ck):
-    """Busca (1x por vela) todos os símbolos; mantém 'último valor bom' na sessão."""
+    """Busca 1x por vela; screeners em paralelo; mantém último valor bom."""
     store = st.session_state.setdefault("tv_store", {})
     meta = st.session_state.setdefault("tv_ck", {})
     prev = dict(store.get(interval_name, {}))
     if meta.get(interval_name) == ck and prev:
-        return prev  # já buscado nesta vela
+        return prev
     fx = tuple(a["tv"] for a in ASSETS if a["type"] == "fx")
     cr = tuple(a["tv"] for a in ASSETS if a["type"] == "crypto")
     merged = dict(prev)
-    for scr, syms in (("forex", fx), ("crypto", cr)):
-        for attempt in range(3):
-            try:
-                good = _tv_batch_once(scr, interval_name, syms)
-                for k, v in good.items():
-                    if v:
-                        merged[k] = v  # só sobrescreve com valor válido
-                break
-            except Exception:
-                time.sleep(0.5 * (attempt + 1))
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        futs = {ex.submit(_fetch_screener, scr, interval_name, syms): scr
+                for scr, syms in (("forex", fx), ("crypto", cr))}
+        for f in as_completed(futs):
+            for k, v in (f.result() or {}).items():
+                if v:
+                    merged[k] = v
     store[interval_name] = merged
     meta[interval_name] = ck
     return merged
 
 
 def classify_summary(summary):
-    """summary do TradingView -> (estado, direção, força)."""
     if not summary:
         return None
     rec = summary.get("RECOMMENDATION", "NEUTRAL")
@@ -122,23 +124,19 @@ def classify_summary(summary):
     if rec in ("STRONG_BUY", "STRONG_SELL"):
         forca = "FORTE"
     else:
-        skew = abs(buy - sell) / total
-        forca = "MEDIO" if skew >= 0.22 else "FRACO"
+        forca = "MEDIO" if abs(buy - sell) / total >= 0.22 else "FRACO"
     return ("ENTRY", direc, forca)
 
 
-# --------------------------------------------------------------------------
-# Fonte 2 (fallback): indicadores via yfinance no servidor
-# --------------------------------------------------------------------------
-@st.cache_data(ttl=50, show_spinner=False)
-def yf_score(yf_symbol, yf_interval, ck):
+# ---------------------- Fallback yfinance (paralelo, sem st nas threads) --------
+def _yf_compute(yf_symbol, yf_interval):
     try:
         import yfinance as yf
         import pandas as pd
         import numpy as np
         period = {"1m": "1d", "5m": "5d", "15m": "5d"}[yf_interval]
         df = yf.download(yf_symbol, interval=yf_interval, period=period,
-                         progress=False, auto_adjust=False)
+                         progress=False, auto_adjust=False, threads=False)
         if df is None or df.empty or len(df) < 30:
             return None
         if isinstance(df.columns, pd.MultiIndex):
@@ -149,19 +147,15 @@ def yf_score(yf_symbol, yf_interval, ck):
         d = c.diff()
         gain = d.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
         loss = (-d.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
-        rs = gain / loss.replace(0, np.nan)
-        rsi = (100 - 100/(1+rs)).fillna(50)
-        macd = c.ewm(span=12, adjust=False).mean() - c.ewm(span=26, adjust=False).mean()
-        sig = macd.ewm(span=9, adjust=False).mean()
-        hist = macd - sig
+        rsi = (100 - 100/(1 + gain/loss.replace(0, np.nan))).fillna(50)
+        hist = (c.ewm(span=12, adjust=False).mean() - c.ewm(span=26, adjust=False).mean())
+        hist = hist - hist.ewm(span=9, adjust=False).mean()
         mid = c.rolling(20).mean()
-        i = -1
-        comps = []
-        comps.append(1.0 if ema9.iloc[i] > ema21.iloc[i] else -1.0)
-        comps.append(max(-1.0, min(1.0, (rsi.iloc[i] - 50) / 20.0)))
-        comps.append(1.0 if hist.iloc[i] > 0 else -1.0)
-        if not math.isnan(mid.iloc[i]):
-            comps.append(1.0 if c.iloc[i] > mid.iloc[i] else -1.0)
+        comps = [1.0 if ema9.iloc[-1] > ema21.iloc[-1] else -1.0,
+                 max(-1.0, min(1.0, (rsi.iloc[-1] - 50) / 20.0)),
+                 1.0 if hist.iloc[-1] > 0 else -1.0]
+        if not math.isnan(mid.iloc[-1]):
+            comps.append(1.0 if c.iloc[-1] > mid.iloc[-1] else -1.0)
         return max(-1.0, min(1.0, sum(comps) / len(comps)))
     except Exception:
         return None
@@ -178,6 +172,20 @@ def classify_score(score):
     return ("ENTRY", direc, forca)
 
 
+def fill_yf(missing_assets, TF):
+    """Baixa os faltantes em paralelo; cacheia em session_state por vela."""
+    cache = st.session_state.setdefault("yf_cache", {})
+    ck = candle_key(int(TF))
+    todo = [a for a in missing_assets if (a["yf"], TF_YF[TF], ck) not in cache]
+    if todo:
+        with ThreadPoolExecutor(max_workers=min(8, len(todo))) as ex:
+            futs = {ex.submit(_yf_compute, a["yf"], TF_YF[TF]): a for a in todo}
+            for f in as_completed(futs):
+                a = futs[f]
+                cache[(a["yf"], TF_YF[TF], ck)] = f.result()
+    return {a["tv"]: classify_score(cache.get((a["yf"], TF_YF[TF], ck))) for a in missing_assets}
+
+
 def apply_conf(res, higher_res):
     if not res or res[0] != "ENTRY" or not higher_res or higher_res[0] != "ENTRY":
         return res
@@ -190,175 +198,176 @@ def apply_conf(res, higher_res):
     return ("ENTRY", d, f)
 
 
-def signal_for(a, cur, hi, TF):
-    r = classify_summary(cur.get(a["tv"]))
-    if r is None:  # fallback yfinance
-        r = classify_score(yf_score(a["yf"], TF_YF[TF], candle_key(int(TF))))
-    if r and r[0] == "ENTRY":
-        hr = classify_summary(hi.get(a["tv"]))
-        r = apply_conf(r, hr)
-    return r  # ("ENTRY",dir,forca) | ("WAIT",None,None) | None
-
-
 # ==========================================================================
-# CSS premium
+# CSS
 # ==========================================================================
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@500;700;800&display=swap');
-:root{--buy:#00f5b0;--buy2:#22d3ee;--sell:#ff3b6b;--sell2:#ff008c;--wait:#8ea0c0;}
 .stApp{background:
-  radial-gradient(1100px 520px at 12% -8%, #172a5a 0%, rgba(7,10,22,0) 55%),
-  radial-gradient(900px 460px at 100% -6%, #0b3a48 0%, rgba(7,10,22,0) 52%),
-  linear-gradient(#070a16,#05070f);
-  color:#eaf0ff;font-family:'Inter',sans-serif;}
-.stApp:before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;opacity:.35;
-  background-image:linear-gradient(rgba(120,150,255,.045) 1px,transparent 1px),
-                   linear-gradient(90deg,rgba(120,150,255,.045) 1px,transparent 1px);
-  background-size:44px 44px;}
+  radial-gradient(1200px 560px at 12% -8%, #182c60 0%, rgba(6,9,20,0) 55%),
+  radial-gradient(920px 480px at 100% -6%, #0b3d4c 0%, rgba(6,9,20,0) 52%),
+  linear-gradient(#070a17,#04060e);color:#eaf0ff;font-family:'Inter',sans-serif;}
+.stApp:before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;opacity:.30;
+  background-image:linear-gradient(rgba(120,150,255,.05) 1px,transparent 1px),
+                   linear-gradient(90deg,rgba(120,150,255,.05) 1px,transparent 1px);background-size:46px 46px;}
 #MainMenu,footer,header{visibility:hidden}
-.block-container{padding-top:1.1rem;max-width:1240px;position:relative;z-index:1}
-/* brand row */
-.brand{display:flex;align-items:center;gap:12px;margin-bottom:2px}
-.brand .logo{font-size:1.5rem;filter:drop-shadow(0 0 10px rgba(0,245,176,.6))}
-.brand .name{font-size:1.5rem;font-weight:900;letter-spacing:.4px;
+.block-container{padding-top:1rem;max-width:1180px;position:relative;z-index:1}
+.brand{display:flex;align-items:center;gap:12px}
+.brand .logo{font-size:1.55rem;filter:drop-shadow(0 0 12px rgba(0,245,176,.6))}
+.brand .name{font-size:1.55rem;font-weight:900;letter-spacing:.5px;
   background:linear-gradient(90deg,#8ff8db,#4fd2ff 55%,#c8a0ff);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
-.brand .live{font-size:.62rem;font-weight:800;letter-spacing:2px;color:#062018;
-  background:linear-gradient(90deg,#00f5b0,#22d3ee);padding:4px 10px;border-radius:999px}
-/* sessions */
-.sess{margin:12px 0 2px;font-size:.82rem;color:#9db0d6;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
-.pill{padding:4px 11px;border-radius:999px;font-size:.74rem;font-weight:700;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.04)}
+.brand .live{font-size:.6rem;font-weight:800;letter-spacing:2px;color:#052018;
+  background:linear-gradient(90deg,#00f5b0,#22d3ee);padding:4px 11px;border-radius:999px}
+.sess{margin:14px 0 4px;font-size:.82rem;color:#9db0d6;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.pill{padding:4px 11px;border-radius:999px;font-size:.73rem;font-weight:700;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.04)}
 .pill.ses{color:#7ee9ff;border-color:rgba(34,211,238,.35)}
 .pill.on{color:#7ef7d6;border-color:rgba(0,245,176,.35)}
-/* HERO signal card */
-.hero-sig{position:relative;border-radius:22px;padding:26px 28px;min-height:210px;
-  background:linear-gradient(160deg,rgba(255,255,255,.06),rgba(255,255,255,.02));
-  border:1px solid rgba(255,255,255,.10);backdrop-filter:blur(14px);overflow:hidden}
-.hero-sig .pair{font-size:1.15rem;font-weight:700;color:#dfe8ff;letter-spacing:1px}
-.hero-sig .dir{font-family:'JetBrains Mono',monospace;font-weight:800;font-size:3.4rem;line-height:1.05;margin:.4rem 0 .2rem}
-.hero-sig .sub{font-size:.8rem;letter-spacing:2px;color:#93a4c8;font-weight:700}
-.buy .dir{color:#00f5b0;text-shadow:0 0 26px rgba(0,245,176,.55)}
-.sell .dir{color:#ff3b6b;text-shadow:0 0 26px rgba(255,59,107,.5)}
-.wait .dir{color:#9fb0d4;font-size:2.4rem;text-shadow:none}
-.hero-sig.buy{box-shadow:inset 0 0 0 1px rgba(0,245,176,.30),0 20px 60px rgba(0,245,176,.08)}
-.hero-sig.sell{box-shadow:inset 0 0 0 1px rgba(255,59,107,.28),0 20px 60px rgba(255,59,107,.08)}
-.hero-sig.wait{box-shadow:inset 0 0 0 1px rgba(255,255,255,.06)}
-.hero-sig .glow{position:absolute;right:-60px;top:-60px;width:220px;height:220px;border-radius:50%;filter:blur(60px);opacity:.5}
-.buy .glow{background:#00f5b0}.sell .glow{background:#ff008c}.wait .glow{background:#3b4a70;opacity:.3}
-/* force bars */
-.fbars{display:flex;gap:6px;margin-top:14px;align-items:center}
-.fbars .b{width:34px;height:9px;border-radius:5px;background:rgba(255,255,255,.10)}
-.buy .b.on{background:linear-gradient(90deg,#00f5b0,#22d3ee);box-shadow:0 0 14px rgba(0,245,176,.5)}
-.sell .b.on{background:linear-gradient(90deg,#ff3b6b,#ff008c);box-shadow:0 0 14px rgba(255,59,107,.45)}
-.flabel{margin-left:10px;font-size:.72rem;letter-spacing:2px;font-weight:800;color:#aeb9d8}
-/* grid cards */
-.gtitle{margin:22px 0 10px;font-size:1.02rem;font-weight:800;color:#dbe6ff;letter-spacing:.4px}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(212px,1fr));gap:14px}
-.card{position:relative;border-radius:16px;padding:15px 17px;background:rgba(255,255,255,.04);
-  border:1px solid rgba(255,255,255,.09);backdrop-filter:blur(10px);transition:transform .16s,border-color .16s}
-.card:hover{transform:translateY(-4px);border-color:rgba(255,255,255,.2)}
-.card .p{font-size:1rem;font-weight:700;color:#e3ebff;letter-spacing:.4px}
-.card .d{font-family:'JetBrains Mono',monospace;font-size:1.5rem;font-weight:800;margin:.28rem 0 .3rem}
+/* HERO */
+.hero-sig{position:relative;border-radius:26px;padding:34px 40px;margin-top:6px;min-height:230px;
+  display:flex;flex-direction:column;justify-content:center;overflow:hidden;
+  background:linear-gradient(155deg,rgba(255,255,255,.07),rgba(255,255,255,.015));
+  border:1px solid rgba(255,255,255,.10);backdrop-filter:blur(16px);
+  transition:box-shadow .3s ease,border-color .3s ease}
+.hero-sig .pair{font-size:1.35rem;font-weight:700;color:#e6edff;letter-spacing:2px}
+.hero-sig .dir{font-family:'JetBrains Mono',monospace;font-weight:800;font-size:5rem;line-height:1;margin:.5rem 0 .3rem;display:flex;align-items:center;gap:18px}
+.hero-sig .arw{font-size:3.4rem}
+.hero-sig .sub{font-size:.82rem;letter-spacing:3px;color:#8ea2c8;font-weight:700}
+.buy .dir{color:#00f5b0;text-shadow:0 0 40px rgba(0,245,176,.5)}
+.sell .dir{color:#ff3b6b;text-shadow:0 0 40px rgba(255,59,107,.45)}
+.wait .dir{color:#9fb0d4;font-size:3.4rem;text-shadow:none}
+.hero-sig.buy{box-shadow:inset 0 0 0 1px rgba(0,245,176,.32),0 26px 70px rgba(0,245,176,.09)}
+.hero-sig.sell{box-shadow:inset 0 0 0 1px rgba(255,59,107,.30),0 26px 70px rgba(255,59,107,.09)}
+.hero-sig.wait{box-shadow:inset 0 0 0 1px rgba(255,255,255,.07)}
+.hero-sig .glow{position:absolute;right:-70px;top:-70px;width:300px;height:300px;border-radius:50%;filter:blur(80px);opacity:.45}
+.buy .glow{background:#00f5b0}.sell .glow{background:#ff008c}.wait .glow{background:#3b4a70;opacity:.25}
+.fbars{display:flex;gap:8px;margin-top:20px;align-items:center}
+.fbars .b{width:52px;height:11px;border-radius:6px;background:rgba(255,255,255,.10)}
+.buy .b.on{background:linear-gradient(90deg,#00f5b0,#22d3ee);box-shadow:0 0 18px rgba(0,245,176,.5)}
+.sell .b.on{background:linear-gradient(90deg,#ff3b6b,#ff008c);box-shadow:0 0 18px rgba(255,59,107,.45)}
+.flabel{margin-left:14px;font-size:.78rem;letter-spacing:3px;font-weight:800;color:#b3bede}
+/* grid */
+.gtitle{margin:26px 0 12px;font-size:1.05rem;font-weight:800;color:#dbe6ff;letter-spacing:.5px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(196px,1fr));gap:15px}
+.card{position:relative;border-radius:18px;padding:17px 18px;background:rgba(255,255,255,.04);
+  border:1px solid rgba(255,255,255,.09);backdrop-filter:blur(10px);
+  transition:transform .18s ease,border-color .18s ease,box-shadow .18s ease}
+.card:hover{transform:translateY(-5px);border-color:rgba(255,255,255,.24);box-shadow:0 16px 40px rgba(0,0,0,.35)}
+.card .p{font-size:1.02rem;font-weight:700;color:#e6edff;letter-spacing:.5px}
+.card .d{font-family:'JetBrains Mono',monospace;font-size:1.6rem;font-weight:800;margin:.3rem 0 .35rem;display:flex;align-items:center;gap:8px}
 .card.buy .d{color:#00f5b0;text-shadow:0 0 16px rgba(0,245,176,.5)}
 .card.sell .d{color:#ff3b6b;text-shadow:0 0 16px rgba(255,59,107,.45)}
-.card.wait .d{color:#93a4c8;font-size:1.05rem;text-shadow:none}
-.card.buy{box-shadow:inset 0 0 0 1px rgba(0,245,176,.22)}
-.card.sell{box-shadow:inset 0 0 0 1px rgba(255,59,107,.20)}
-.cb{display:flex;gap:4px;margin-top:2px;align-items:center}
-.cb .b{width:20px;height:6px;border-radius:3px;background:rgba(255,255,255,.10)}
+.card.wait .d{color:#93a4c8;font-size:1.1rem;text-shadow:none}
+.card.buy{box-shadow:inset 0 0 0 1px rgba(0,245,176,.20)}
+.card.sell{box-shadow:inset 0 0 0 1px rgba(255,59,107,.18)}
+.cb{display:flex;gap:5px;margin-top:2px;align-items:center}
+.cb .b{width:24px;height:7px;border-radius:4px;background:rgba(255,255,255,.10)}
 .card.buy .b.on{background:linear-gradient(90deg,#00f5b0,#22d3ee)}
 .card.sell .b.on{background:linear-gradient(90deg,#ff3b6b,#ff008c)}
-.cb .lab{margin-left:6px;font-size:.62rem;letter-spacing:1.5px;font-weight:800;color:#9aa8cc}
-.footline{margin-top:26px;text-align:center;font-size:.72rem;color:#5f6d90}
-/* streamlit widgets */
-section[data-testid="stSidebar"]{background:rgba(10,14,28,.7);backdrop-filter:blur(8px)}
+.cb .lab{margin-left:7px;font-size:.64rem;letter-spacing:1.5px;font-weight:800;color:#9aa8cc}
+.footline{margin-top:30px;text-align:center;font-size:.72rem;color:#5c6a8e}
+section[data-testid="stSidebar"]{background:rgba(9,13,26,.72);backdrop-filter:blur(8px)}
 div[role="radiogroup"]{gap:8px}
 div[role="radiogroup"] label{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.10);
-  padding:7px 16px;border-radius:11px;font-weight:700}
+  padding:8px 18px;border-radius:12px;font-weight:700;transition:background .15s}
+div[role="radiogroup"] label:hover{background:rgba(255,255,255,.09)}
 .stSelectbox div[data-baseweb="select"]>div{background:rgba(255,255,255,.04);border-color:rgba(255,255,255,.12)}
 </style>
 """, unsafe_allow_html=True)
 
-# --------------------------------------------------------------------------
 with st.sidebar:
     st.markdown("#### ⚡ Sinais IA")
     show_closed = st.toggle("Mostrar pares fora de sessão", value=False)
-    st.caption("Timeframe define o tamanho da vela.")
+    st.caption("O timeframe define o tamanho da vela.")
 
 st.markdown('<div class="brand"><span class="logo">⚡</span>'
             '<span class="name">Sinais IA</span>'
             '<span class="live">TEMPO REAL</span></div>', unsafe_allow_html=True)
 
-c1, c2, c3 = st.columns([1.2, 1.5, 0.9])
+c1, c2 = st.columns([1.1, 1.6])
 with c1:
     tf_label = st.radio("Timeframe", ["1 min", "5 min", "15 min"], index=1, horizontal=True,
                         label_visibility="collapsed")
     TF = {"1 min": "1", "5 min": "5", "15 min": "15"}[tf_label]
 with c2:
-    sel_name = st.selectbox("Ativo", [a["name"] for a in ASSETS], index=0,
-                            label_visibility="collapsed")
-with c3:
-    st.write("")
+    sel_name = st.selectbox("Ativo", [a["name"] for a in ASSETS], index=0, label_visibility="collapsed")
 
-st_autorefresh(interval=10000, key="auto")
+st_autorefresh(interval=15000, key="auto")
 now = datetime.now(timezone.utc)
 
+# dados (cache por vela): timeframe atual + maior (confluência)
 cur = tv_all(INTERVAL_NAME[TF], candle_key(int(TF)))
 hi = tv_all(INTERVAL_NAME[HIGHER[TF]], candle_key(int(HIGHER[TF])))
 
 open_assets = [a for a in ASSETS if pair_open(a, now)]
-open_fx = [a for a in open_assets if a["type"] == "fx"]
+show_list = open_assets if not show_closed else ASSETS
+sel = next(a for a in ASSETS if a["name"] == sel_name)
+
+# resolve sinais: TradingView -> (fallback yfinance só para faltantes, em paralelo)
+resolved = {}
+needed = {sel["tv"]: sel}
+for a in show_list:
+    needed[a["tv"]] = a
+missing = []
+for tv, a in needed.items():
+    r = classify_summary(cur.get(tv))
+    if r is None:
+        missing.append(a)
+    else:
+        resolved[tv] = r
+if missing:
+    yf_res = fill_yf(missing, TF)
+    for tv, r in yf_res.items():
+        resolved[tv] = r
+
+
+def sig_of(a):
+    r = resolved.get(a["tv"])
+    if r and r[0] == "ENTRY":
+        r = apply_conf(r, classify_summary(hi.get(a["tv"])))
+    return r
+
 
 # sessões
 if market_open(now):
     ses = "".join(f'<span class="pill ses">🟢 {s}</span>' for s in active_sessions(now))
-    op = "".join(f'<span class="pill on">{a["name"]}</span>' for a in open_fx)
+    op = "".join(f'<span class="pill on">{a["name"]}</span>' for a in open_assets if a["type"] == "fx")
     st.markdown(f'<div class="sess"><b>Sessões:</b> {ses} <b style="margin-left:6px">Abertos:</b> {op or "—"}</div>',
                 unsafe_allow_html=True)
 else:
-    st.markdown('<div class="sess">🔴 <b>Forex fechado</b> — apenas cripto (24/7).</div>',
-                unsafe_allow_html=True)
+    st.markdown('<div class="sess">🔴 <b>Forex fechado</b> — apenas cripto (24/7).</div>', unsafe_allow_html=True)
 
-# contador de vela + NOVA ENTRADA
+# contador de vela
 components.html(f"""
 <div style="font-family:'JetBrains Mono',monospace;color:#eaf0ff;background:rgba(255,255,255,.05);
- border:1px solid rgba(255,255,255,.10);border-radius:16px;padding:14px 20px;display:flex;
- align-items:center;gap:20px;backdrop-filter:blur(10px)">
- <div style="font-size:.68rem;letter-spacing:2px;color:#93a4c8">PRÓXIMA VELA · {TF_LABEL[TF]}</div>
- <div id="clk" style="font-size:2.1rem;font-weight:800;letter-spacing:3px">--:--</div>
+ border:1px solid rgba(255,255,255,.10);border-radius:16px;padding:14px 22px;display:flex;
+ align-items:center;gap:22px;backdrop-filter:blur(10px)">
+ <div style="font-size:.66rem;letter-spacing:2px;color:#93a4c8">PRÓXIMA VELA · {TF_LABEL[TF]}</div>
+ <div id="clk" style="font-size:2.2rem;font-weight:800;letter-spacing:3px">--:--</div>
  <div id="ent"></div><div style="flex:1"></div>
- <div style="height:9px;flex:0 0 260px;border-radius:6px;background:rgba(255,255,255,.10);overflow:hidden">
+ <div style="height:9px;flex:0 0 280px;border-radius:6px;background:rgba(255,255,255,.10);overflow:hidden">
    <div id="pb" style="height:100%;width:0%;background:linear-gradient(90deg,#00f5b0,#22d3ee)"></div></div>
 </div>
 <style>@import url('https://fonts.googleapis.com/css2?family=Inter:wght@800&family=JetBrains+Mono:wght@800&display=swap');
-@keyframes np{{0%{{transform:scale(.96);opacity:.6;box-shadow:0 0 0 rgba(0,245,176,.0)}}
-50%{{transform:scale(1.04);opacity:1;box-shadow:0 0 26px rgba(0,245,176,.7)}}
-100%{{transform:scale(.96);opacity:.6;box-shadow:0 0 0 rgba(0,245,176,.0)}}}}</style>
-<script>
-var TF={int(TF)};
-function t(){{var n=Date.now()/1000,per=TF*60,pos=n%per,left=per-pos;
-var m=Math.floor(left/60),s=Math.floor(left%60);
-document.getElementById('clk').textContent=(m<10?'0':'')+m+':'+(s<10?'0':'')+s;
+@keyframes np{{0%{{transform:scale(.96);opacity:.6}}50%{{transform:scale(1.05);opacity:1;box-shadow:0 0 28px rgba(0,245,176,.75)}}100%{{transform:scale(.96);opacity:.6}}}}</style>
+<script>var TF={int(TF)};function t(){{var n=Date.now()/1000,per=TF*60,pos=n%per,left=per-pos,
+m=Math.floor(left/60),s=Math.floor(left%60);document.getElementById('clk').textContent=(m<10?'0':'')+m+':'+(s<10?'0':'')+s;
 document.getElementById('pb').style.width=((pos/per)*100).toFixed(1)+'%';
-var e=document.getElementById('ent');
-e.innerHTML = pos<12 ? '<span style="font-family:Inter,sans-serif;font-weight:800;letter-spacing:1px;'
- +'padding:7px 15px;border-radius:999px;color:#04120d;background:linear-gradient(90deg,#00f5b0,#22d3ee);'
- +'animation:np 1s infinite">● NOVA ENTRADA</span>' : '';}}
-t();setInterval(t,1000);
-</script>
+document.getElementById('ent').innerHTML=pos<12?'<span style="font-family:Inter,sans-serif;font-weight:800;letter-spacing:1px;padding:7px 16px;border-radius:999px;color:#04120d;background:linear-gradient(90deg,#00f5b0,#22d3ee);animation:np 1s infinite">● NOVA ENTRADA</span>':'';}}
+t();setInterval(t,1000);</script>
 """, height=72)
 
 
-def _bars(forca, n):
+def _bars(forca, w):
     fill = {"FRACO": 1, "MEDIO": 2, "FORTE": 3}.get(forca, 0)
-    return "".join(f'<span class="b {"on" if i < fill else ""}"></span>' for i in range(n))
+    return "".join(f'<span class="b {"on" if i < fill else ""}"></span>' for i in range(3))
 
 
 def hero_html(a, r):
     if not r or r[0] == "WAIT":
         return (f'<div class="hero-sig wait"><div class="glow"></div>'
                 f'<div class="pair">{a["name"]}</div>'
-                f'<div class="dir">◵ AGUARDANDO</div>'
+                f'<div class="dir"><span class="arw">◵</span> AGUARDANDO</div>'
                 f'<div class="sub">SEM ENTRADA NO MOMENTO</div></div>')
     _, d, f = r
     cls = "buy" if d == "COMPRA" else "sell"
@@ -366,8 +375,8 @@ def hero_html(a, r):
     fl = {"FRACO": "FRACA", "MEDIO": "MÉDIA", "FORTE": "FORTE"}[f]
     return (f'<div class="hero-sig {cls}"><div class="glow"></div>'
             f'<div class="pair">{a["name"]}</div>'
-            f'<div class="dir">{arrow} {d}</div>'
-            f'<div class="fbars">{_bars(f, 3)}<span class="flabel">FORÇA {fl}</span></div></div>')
+            f'<div class="dir"><span class="arw">{arrow}</span> {d}</div>'
+            f'<div class="fbars">{_bars(f, 1)}<span class="flabel">FORÇA {fl}</span></div></div>')
 
 
 def card_html(a, r):
@@ -381,31 +390,13 @@ def card_html(a, r):
     fl = {"FRACO": "FRACA", "MEDIO": "MÉDIA", "FORTE": "FORTE"}[f]
     return (f'<div class="card {cls}"><div class="p">{a["name"]}</div>'
             f'<div class="d">{arrow} {d}</div>'
-            f'<div class="cb">{_bars(f, 3)}<span class="lab">{fl}</span></div></div>')
+            f'<div class="cb">{_bars(f, 1)}<span class="lab">{fl}</span></div></div>')
 
 
-# HERO + gráfico
-sel = next(a for a in ASSETS if a["name"] == sel_name)
-colA, colB = st.columns([1, 1.4])
-with colA:
-    st.markdown(hero_html(sel, signal_for(sel, cur, hi, TF)), unsafe_allow_html=True)
-with colB:
-    components.html(f"""
-    <div class="tradingview-widget-container" style="height:230px">
-      <div class="tradingview-widget-container__widget" style="height:100%"></div>
-      <script type="text/javascript" async
-        src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js">
-      {{"autosize":true,"symbol":"{sel['tv']}","interval":"{TF}","timezone":"Etc/UTC",
-       "theme":"dark","style":"1","locale":"br","hide_top_toolbar":false,"hide_side_toolbar":true,
-       "allow_symbol_change":false,"backgroundColor":"#0a0f1e","gridColor":"rgba(255,255,255,0.05)"}}
-      </script>
-    </div>""", height=240)
+st.markdown(hero_html(sel, sig_of(sel)), unsafe_allow_html=True)
 
-# grade
 st.markdown(f'<div class="gtitle">Ativos · {TF_LABEL[TF]}</div>', unsafe_allow_html=True)
-show_list = open_assets if not show_closed else ASSETS
-cards = "".join(card_html(a, signal_for(a, cur, hi, TF)) for a in show_list)
+cards = "".join(card_html(a, sig_of(a)) for a in show_list)
 st.markdown(f'<div class="grid">{cards}</div>', unsafe_allow_html=True)
 
-st.markdown('<div class="footline">Uso próprio · não é recomendação financeira</div>',
-            unsafe_allow_html=True)
+st.markdown('<div class="footline">Uso próprio · não é recomendação financeira</div>', unsafe_allow_html=True)
