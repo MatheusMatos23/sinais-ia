@@ -760,45 +760,53 @@ entries.sort(key=lambda e: (len(e["strats"]), FORCE_ORDER[e["force"]], e["score"
 
 # ============================== DESEMPENHO ==============================
 def run_perf():
+    """
+    Backtest de todas as estratégias.
+
+    Os laços estão com o ATIVO por fora e a estratégia por dentro de propósito:
+    add_indicators (EMA, RSI, MACD, Bollinger, ADX sobre ~6 mil velas) é a conta
+    mais cara daqui e depende só do ativo, não da estratégia. Com o laço na ordem
+    inversa ela rodava 11× por ativo — 99 vezes no total em vez de 9.
+    """
     today = now.date()
     dhist = get_data_hist(scan_list, interval)      # janela grande, cache de 10 min
-    out = {}
-    for name in STRATEGIES:
-        acc = {"hoje": [0, 0], "per": [0, 0]}
-        for a in scan_list:
-            df = dhist.get(a["name"])
-            if df is None or len(df) < 80:
-                continue
-            d = add_indicators(df)
+    out = {n: {"hoje": [0, 0], "per": [0, 0]} for n in STRATEGIES}
+    for a in scan_list:
+        df = dhist.get(a["name"])
+        if df is None or len(df) < 80:
+            continue
+        d = add_indicators(df)                      # uma vez por ativo
+        m = d.index.date == today                   # máscara do dia, idem
+        tem_hoje = m.any()
+        d_hoje = d[m] if tem_hoje else None
+        for name in STRATEGIES:
             sc = score_of(name, d, interval)
             r = backtest(d, sc)
+            acc = out[name]
             acc["per"][0] += r["trades"]; acc["per"][1] += r["wins"]
-            m = d.index.date == today
-            if m.any():
-                rd = backtest(d[m], sc[m])
+            if tem_hoje:
+                rd = backtest(d_hoje, sc[m])
                 acc["hoje"][0] += rd["trades"]; acc["hoje"][1] += rd["wins"]
-        out[name] = acc
     return out
 
 
-def get_perf():
+def get_perf(calcular=False):
     """
-    Backtest do painel Desempenho. É a parte MAIS PESADA do app: baixa 1 mês de
-    velas de todos os ativos e roda as 11 estratégias em cima.
+    Backtest do painel Desempenho — a parte mais pesada do app: 1 mês de velas de
+    todos os ativos + 11 estratégias em cima.
 
-    Duas decisões que valem pela latência da entrada:
-      1) só é chamada dentro da aba Desempenho — assim a aba Sinais renderiza
-         antes, sem esperar o backtest;
-      2) o cache é por BLOCO DE 10 MINUTOS, não por vela. Antes recalculava a
-         cada virada de vela, exatamente no instante mais crítico do app.
+    Nunca roda sozinha. O Streamlit executa o corpo de TODAS as abas em cada
+    rerun (a troca de aba é só CSS no navegador), então um recálculo automático
+    aqui congela a aba Sinais junto — era o que acontecia a cada 10 minutos.
+    Agora só recalcula quando você pede, e enquanto isso mostra o último
+    resultado com a hora em que foi feito.
     """
-    pc = st.session_state.setdefault("perf", {})
-    bucket = int(datetime.now(timezone.utc).timestamp() // 600)
-    pk = (interval, bucket, len(scan_list))
-    if pk not in pc:
-        pc.clear()
-        pc[pk] = run_perf()
-    return pc[pk]
+    if calcular:
+        t0 = time.perf_counter()
+        st.session_state["perf_cache"] = {
+            "chave": (interval, len(scan_list)), "dados": run_perf(),
+            "quando": datetime.now(timezone.utc), "levou": time.perf_counter() - t0}
+    return st.session_state.get("perf_cache")      # None = ainda não calculado
 
 # ============================== TOPBAR ==============================
 if market_open(now):
@@ -881,7 +889,7 @@ def gist_load():
         return None
     import requests
     try:
-        r = requests.get(f"https://api.github.com/gists/{gid}", timeout=8,
+        r = requests.get(f"https://api.github.com/gists/{gid}", timeout=4,
                          headers={"Authorization": f"Bearer {tok}",
                                   "Accept": "application/vnd.github+json"})
         if r.status_code != 200:
@@ -1215,38 +1223,58 @@ with tab_perf:
                 f'<span class="ci">IC95 {lo*100:.0f}–{hi*100:.0f}%</span><br>'
                 f'<span class="n">{n} ops</span><span class="verd {vc}">{vt}</span>')
 
-    perf = get_perf()          # só aqui: a aba Sinais não espera o backtest
-    ranked = sorted(STRATEGIES, key=lambda k: (perf[k]["per"][1] / perf[k]["per"][0]) if perf[k]["per"][0] else 0,
-                    reverse=True)
-    top = ranked[0] if perf[ranked[0]]["per"][0] else None
-    proven = bool(top) and verdict(perf[top]["per"][1], perf[top]["per"][0], PAYOUT) == "acima"
+    # Recálculo sob demanda: nada aqui roda sozinho, senão trava a aba Sinais.
+    cp = get_perf()
+    bc1, bc2 = st.columns([1, 3])
+    with bc1:
+        pedir = st.button("Calcular" if cp is None else "Recalcular",
+                          use_container_width=True, key="btn_perf")
+    with bc2:
+        if cp is None:
+            st.caption("O backtest baixa 1 mês de velas de todos os ativos — "
+                       "leva alguns segundos e por isso só roda quando você pede.")
+        else:
+            desatual = cp["chave"] != (interval, len(scan_list))
+            q = f'calculado às {hm(cp["quando"])} em {cp["levou"]:.1f}s'
+            st.caption(("⚠️ " + q + " — com outro timeframe/lista de ativos. Recalcule."
+                        ) if desatual else q)
+    if pedir:
+        with st.spinner("Rodando o backtest…"):
+            cp = get_perf(calcular=True)
 
-    rows = ""
-    for name in STRATEGIES:
-        p = perf[name]
-        tag = ""
-        if name == top:
-            tag = ('<span class="tagmini">VANTAGEM COMPROVADA</span>' if proven
-                   else '<span class="tagmini">MAIOR TAXA · não comprovada</span>')
-        on = ' <span class="tagmini">em uso</span>' if name in sel_strats else ""
-        rows += (f'<tr class="{"on" if name in sel_strats else ""}">'
-                 f'<td class="nm">{name}{tag}{on}</td>'
-                 f'<td>{cell(*p["hoje"])}</td><td>{cell(*p["per"])}</td></tr>')
+    if cp is not None:
+        perf = cp["dados"]
+        ranked = sorted(STRATEGIES, key=lambda k: (perf[k]["per"][1] / perf[k]["per"][0]) if perf[k]["per"][0] else 0,
+                        reverse=True)
+        top = ranked[0] if perf[ranked[0]]["per"][0] else None
+        proven = bool(top) and verdict(perf[top]["per"][1], perf[top]["per"][0], PAYOUT) == "acima"
 
-    st.markdown(f'<div class="sect">Desempenho · {TF_LABEL[TF]} · payout {payout_lbl} '
-                f'· breakeven {BE:.2f}%</div>', unsafe_allow_html=True)
-    st.markdown(f'<table class="tbl"><tr><th>Estratégia</th><th>Hoje</th>'
-                f'<th>Período ({TF_PERIOD[interval]})</th></tr>{rows}</table>', unsafe_allow_html=True)
-    st.markdown('<div class="note"><b>Como ler:</b> a taxa é medida operando toda vez que a estratégia '
-                'dispara, entrando na <b>abertura da vela seguinte</b>. Acerto pela cor da vela: COMPRA '
-                'vence se fechar <b style="color:#00e5a0">verde</b>, VENDA se fechar '
-                '<b style="color:#ff4d6d">vermelha</b>; empate devolve a aposta.<br>'
-                '<b>IC95</b> é a faixa onde a taxa real provavelmente está. Só existe vantagem se '
-                '<b>toda</b> a faixa ficar acima do breakeven — quando ela cruza, o resultado é '
-                '<b>não conclusivo</b> e escolher pela maior taxa é perseguir ruído.</div>',
-                unsafe_allow_html=True)
+        rows = ""
+        for name in STRATEGIES:
+            p = perf[name]
+            tag = ""
+            if name == top:
+                tag = ('<span class="tagmini">VANTAGEM COMPROVADA</span>' if proven
+                       else '<span class="tagmini">MAIOR TAXA · não comprovada</span>')
+            on = ' <span class="tagmini">em uso</span>' if name in sel_strats else ""
+            rows += (f'<tr class="{"on" if name in sel_strats else ""}">'
+                     f'<td class="nm">{name}{tag}{on}</td>'
+                     f'<td>{cell(*p["hoje"])}</td><td>{cell(*p["per"])}</td></tr>')
 
-# ============================== ABA HISTÓRICO ==============================
+        st.markdown(f'<div class="sect">Desempenho · {TF_LABEL[TF]} · payout {payout_lbl} '
+                    f'· breakeven {BE:.2f}%</div>', unsafe_allow_html=True)
+        st.markdown(f'<table class="tbl"><tr><th>Estratégia</th><th>Hoje</th>'
+                    f'<th>Período ({TF_PERIOD[interval]})</th></tr>{rows}</table>', unsafe_allow_html=True)
+        st.markdown('<div class="note"><b>Como ler:</b> a taxa é medida operando toda vez que a estratégia '
+                    'dispara, entrando na <b>abertura da vela seguinte</b>. Acerto pela cor da vela: COMPRA '
+                    'vence se fechar <b style="color:#00e5a0">verde</b>, VENDA se fechar '
+                    '<b style="color:#ff4d6d">vermelha</b>; empate devolve a aposta.<br>'
+                    '<b>IC95</b> é a faixa onde a taxa real provavelmente está. Só existe vantagem se '
+                    '<b>toda</b> a faixa ficar acima do breakeven — quando ela cruza, o resultado é '
+                    '<b>não conclusivo</b> e escolher pela maior taxa é perseguir ruído.</div>',
+                    unsafe_allow_html=True)
+
+    # ============================== ABA HISTÓRICO ==============================
 with tab_hist:
     if not hist:
         st.markdown('<div class="sect">Histórico de sinais</div>', unsafe_allow_html=True)
