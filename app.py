@@ -656,8 +656,12 @@ div[data-testid="stMetricValue"]{font-family:'IBM Plex Mono',monospace;font-size
   border:1px solid var(--line);border-radius:var(--r2);
   padding:14px 20px 12px;margin-bottom:14px;align-items:flex-end;gap:22px}
 [data-testid="stHorizontalBlock"]:has(.lbl) [data-testid="stElementContainer"]{margin-bottom:0}
-/* alinha o toggle "Ao vivo" com a base dos outros controles */
-[data-testid="stHorizontalBlock"]:has(.lbl) [data-testid="stCheckbox"]{padding-bottom:5px}
+/* linha da chave "Ao vivo": encostada à direita, compacta */
+[data-testid="stHorizontalBlock"]:has(.livewrap){margin:-6px 0 2px}
+[data-testid="stHorizontalBlock"]:has(.livewrap) [data-testid="stCheckbox"]{
+  display:flex;justify-content:flex-end}
+[data-testid="stHorizontalBlock"]:has(.livewrap) label p{
+  font-size:.72rem!important;color:var(--ink2)!important;font-weight:600!important}
 div[data-testid="stExpander"]{margin-bottom:4px}
 @media(max-width:900px){.hero{grid-template-columns:1fr}.hero-side{border-left:0;border-top:1px solid var(--line)}}
 </style>
@@ -666,9 +670,9 @@ div[data-testid="stExpander"]{margin-bottom:4px}
 # ============================== CONTROLES (no corpo da página) ==============================
 topbar_slot = st.empty()          # a barra de status é preenchida depois (precisa dos dados)
 st.markdown('<div class="ctrlbar">', unsafe_allow_html=True)
-# A caixa de estratégias precisa de espaço: com pouca largura os chips quebram
-# em duas linhas e desalinham a barra inteira. Ela leva a maior fatia.
-cc1, cc2, cc3, cc4 = st.columns([0.92, 2.75, 0.95, 0.62], vertical_alignment="bottom")
+# Três colunas, não quatro: com quatro o rádio de timeframe era cortado e o
+# toggle caía para uma segunda linha. A chave "Ao vivo" foi para a linha das abas.
+cc1, cc2, cc3 = st.columns([1.05, 2.45, 1.05], vertical_alignment="bottom")
 with cc1:
     st.markdown('<div class="lbl">Timeframe</div>', unsafe_allow_html=True)
     tf_label = st.radio("tf", ["1 min", "5 min", "15 min"], index=1, horizontal=True,
@@ -688,16 +692,17 @@ with cc3:
     st.markdown('<div class="lbl">Força mínima</div>', unsafe_allow_html=True)
     min_force = st.select_slider("fm", options=["FRACA", "MÉDIA", "FORTE"], value="FRACA",
                                  label_visibility="collapsed")
-with cc4:
-    # Enquanto você lê Desempenho ou Histórico, nada precisa se atualizar. Cada
-    # rerun reconstrói a página inteira, e é isso que faz a leitura "pular".
-    # Aqui em cima porque é o controle que resolve o problema na hora.
-    st.markdown('<div class="lbl">Ao vivo</div>', unsafe_allow_html=True)
-    auto_on = st.toggle("Atualizar", value=True, key="auto_on_top",
-                        label_visibility="collapsed",
+st.markdown('</div>', unsafe_allow_html=True)
+
+# Chave "Ao vivo" alinhada à direita, logo abaixo da barra de controles. Tem de
+# ser criada antes do expander (o slider de intervalo depende dela) e antes do
+# st_autorefresh, que lê o valor.
+_lv1, _lv2 = st.columns([4.15, 1.0], vertical_alignment="center")
+with _lv2:
+    st.markdown('<div class="livewrap"></div>', unsafe_allow_html=True)
+    auto_on = st.toggle("Ao vivo", value=True, key="auto_on_top",
                         help="Ligado, a página se atualiza sozinha a cada poucos "
                              "segundos. Desligue para ler as tabelas paradas.")
-st.markdown('</div>', unsafe_allow_html=True)
 
 with st.expander("Mais opções — filtros, áudio, payout e atualização"):
     o1, o2, o3 = st.columns(3)
@@ -713,7 +718,7 @@ with st.expander("Mais opções — filtros, áudio, payout e atualização"):
         st.markdown("**Análise e atualização**")
         payout_lbl = st.radio("Payout padrão da corretora", ["80%", "90%"], index=0,
                               horizontal=True)
-        st.caption("A chave *Ao vivo* fica na barra de controles, no topo.")
+        st.caption("A chave *Ao vivo* fica logo abaixo da barra de controles.")
         every = st.slider("Intervalo (s)", 10, 60, 15, step=5, disabled=not auto_on)
     st.markdown("**Payout por ativo** — o breakeven muda com o payout, então vale "
                 "conferir o de cada par na sua corretora. Em branco = usa o padrão.")
