@@ -679,9 +679,15 @@ div[data-testid="stMetricLabel"] p{font-size:.58rem!important;letter-spacing:.14
 div[data-testid="stMetricValue"]{font-family:'IBM Plex Mono',monospace;font-size:1.3rem;
   font-variant-numeric:tabular-nums}
 /* ---------- janela de entrada / alertas ---------- */
-.win{display:flex;align-items:center;gap:10px;border-radius:10px;padding:12px 20px;
+.win{display:flex;align-items:flex-start;gap:10px;border-radius:10px;padding:12px 20px;
   font-size:.82rem;color:var(--ink2);margin:var(--gap-bloco) 0 var(--gap-curto);border:1px solid var(--line)}
-.win .pt{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
+.win .pt{width:7px;height:7px;border-radius:50%;flex:0 0 auto;margin-top:6px}
+/* Tudo que não for o ponto entra AQUI. Sem este wrapper, cada <b> e <code>
+   solto vira um item de flex e o texto sai quebrado em colunas. */
+.win .msg{flex:1 1 auto;min-width:0;line-height:1.6}
+.win code{font-family:'IBM Plex Mono',monospace;font-size:.75rem;
+  background:rgba(255,255,255,.06);border:1px solid var(--line2);border-radius:5px;
+  padding:1px 6px;color:var(--ink);white-space:nowrap}
 .win b{color:var(--ink);font-weight:600}
 .win.ok{background:var(--buy-dim);border-color:rgba(0,200,138,.28)}
 .win.ok .pt{background:var(--buy);box-shadow:0 0 0 3px rgba(0,200,138,.18);
@@ -1051,6 +1057,11 @@ with tab_cfg:
         jan_ini, jan_fim = st.slider("Faixa (horário de Brasília)", 0, 23, (9, 17),
                                      disabled=not usar_janela,
                                      format="%dh")
+        st.markdown("**Mercados**")
+        mercado = st.radio("Onde operar", ["Tudo", "Só forex", "Só cripto"],
+                           index=0, horizontal=False, label_visibility="collapsed",
+                           help="Cripto opera 24/7; forex fecha no fim de semana e "
+                                "fora das sessões.")
         st.markdown("**Filtros**")
         only_conf = st.toggle("Só entradas com 2+ estratégias", value=False)
         show_closed = st.toggle("Incluir pares fora de sessão", value=False)
@@ -1137,8 +1148,12 @@ _ck_ant = st.session_state.get("ultimo_ck")
 primeiro_da_vela = (_ck_ant is not None) and (_ck_ant != _ck_now)
 st.session_state["ultimo_ck"] = _ck_now
 
-open_assets = [a for a in ASSETS if pair_open(a, now)]
-scan_list = ASSETS if show_closed else open_assets
+# Classe de ativo escolhida nos Ajustes. Filtra ANTES de qualquer busca, então
+# escolher "só cripto" também economiza créditos da Twelve Data.
+_tipo = {"Só forex": "fx", "Só cripto": "crypto"}.get(mercado)
+_universo = [a for a in ASSETS if _tipo is None or a["type"] == _tipo]
+open_assets = [a for a in _universo if pair_open(a, now)]
+scan_list = _universo if show_closed else open_assets
 t_scan0 = time.perf_counter()
 data, fetch_s = get_data_live(scan_list, interval, minutes)
 if not fetch_s:
@@ -1623,14 +1638,14 @@ with tab_sig:
 
     # --- estado da janela de entrada ---
     if window_open:
-        st.markdown(f'<div class="win ok"><span class="pt"></span>'
+        st.markdown(f'<div class="win ok"><span class="pt"></span><div class="msg">'
                     f'<b>Entrada válida agora</b> — vela das {cvela}. '
-                    f'Restam {int(ENTRY_WINDOW - _age)}s desta janela.</div>', unsafe_allow_html=True)
+                    f'Restam {int(ENTRY_WINDOW - _age)}s desta janela.</div></div>', unsafe_allow_html=True)
     else:
         mm, ss = divmod(int(secs_to_next), 60)
-        st.markdown(f'<div class="win wait"><span class="pt"></span>'
+        st.markdown(f'<div class="win wait"><span class="pt"></span><div class="msg">'
                     f'<b>Vela em andamento</b> — já se passaram {int(_age)}s desta vela. '
-                    f'Próxima janela de entrada em {mm:02d}:{ss:02d}.</div>', unsafe_allow_html=True)
+                    f'Próxima janela de entrada em {mm:02d}:{ss:02d}.</div></div>', unsafe_allow_html=True)
 
     if dados_atrasados:
         if sem_vela:
@@ -1639,8 +1654,9 @@ with tab_sig:
                    f'({quais}) — <b>bloqueados nesta vela</b>, não geram entrada')
         else:
             det = f'a vela mais recente ({lag_asset}) chegou há {lag_min:.0f} min'
-        st.markdown(f'<div class="win alert"><span class="pt"></span>'
-                    f'<b>Atraso na fonte de dados</b> — {det}.</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="win alert"><span class="pt"></span><div class="msg">'
+                    f'<b>Atraso na fonte de dados</b> — {det}.</div></div>',
+                    unsafe_allow_html=True)
 
     # medição real da latência (transparência)
     render_s = time.perf_counter() - t_scan0
@@ -2174,9 +2190,9 @@ with tab_hist:
     if HIST_REMOTO:
         err = _gist_err[0]
         if err:
-            st.markdown(f'<div class="win alert"><span class="pt"></span>'
+            st.markdown(f'<div class="win alert"><span class="pt"></span><div class="msg">'
                         f'<b>Falha ao sincronizar</b> — {err}. O histórico está só no disco '
-                        f'do container e se perde no próximo rebuild.</div>',
+                        f'do container e se perde no próximo rebuild.</div></div>',
                         unsafe_allow_html=True)
         else:
             st.markdown('<div class="note"><b>Histórico sincronizado.</b> Está espelhado no '
@@ -2184,13 +2200,14 @@ with tab_hist:
                         '</div>', unsafe_allow_html=True)
     else:
         st.markdown(
-            '<div class="win alert"><span class="pt"></span><b>Este histórico é temporário.</b> '
-            'O disco do Streamlit Cloud é apagado a cada rebuild do app, então tudo abaixo '
-            'some junto — e sem amostra acumulada o forward test nunca sai de "não conclusivo". '
-            'Para preservar: crie um Gist privado com um arquivo <code>sinais_historico.json</code> '
-            'e um token do GitHub com escopo <code>gist</code>, e adicione '
-            '<code>GITHUB_TOKEN</code> e <code>GIST_ID</code> nos Secrets do app. '
-            'Enquanto isso, baixe o CSV abaixo com frequência.</div>',
+            '<div class="win alert"><span class="pt"></span><div class="msg">'
+            '<b>Este histórico é temporário.</b> O disco do Streamlit Cloud é apagado a cada '
+            'rebuild do app, então tudo abaixo some junto — e sem amostra acumulada o forward '
+            'test nunca sai de "não conclusivo".<br>'
+            'Para preservar, adicione nos Secrets do app: <code>GITHUB_TOKEN</code> '
+            '(token do GitHub com escopo <code>gist</code>) e <code>GIST_ID</code> '
+            '(de um Gist privado contendo o arquivo <code>sinais_historico.json</code>).<br>'
+            'Enquanto isso, baixe o CSV abaixo com frequência.</div></div>',
             unsafe_allow_html=True)
 
     st.markdown('<div class="sect">Backup e importação</div>', unsafe_allow_html=True)
