@@ -491,9 +491,14 @@ hr{border-color:var(--line)}
 .livebtn:hover{filter:brightness(1.25)}
 .livebtn i{width:7px;height:7px;border-radius:50%;background:var(--mut);font-style:normal}
 .livebtn.on{color:var(--buy);border-color:rgba(0,200,138,.34);background:rgba(0,200,138,.10)}
-.livebtn.on i{background:var(--buy);box-shadow:0 0 0 3px rgba(0,200,138,.16);
-  animation:lpulse 1.8s ease-in-out infinite}
-@keyframes lpulse{0%,100%{opacity:1}50%{opacity:.4}}
+/* O ponto "ao vivo" pulsa o HALO, não a opacidade. Piscar o elemento inteiro
+   criava um tique constante no canto da tela, competindo com o sinal. */
+.livebtn.on i{background:var(--buy);animation:halo 2.4s ease-in-out infinite}
+@keyframes halo{
+  0%,100%{box-shadow:0 0 0 3px rgba(0,200,138,.18)}
+  50%{box-shadow:0 0 0 5px rgba(0,200,138,.04)}}
+/* Usada só pela pastilha de ENTRADA VÁLIDA, que dura 20s e precisa chamar. */
+@keyframes lpulse{0%,100%{opacity:1}50%{opacity:.45}}
 .meta{display:flex;flex-direction:column;gap:3px}
 .meta .k{font-size:.58rem;letter-spacing:.14em;color:var(--mut);font-weight:600;text-transform:uppercase}
 .meta .v{font-size:.82rem;font-weight:600;color:var(--ink2)}
@@ -795,6 +800,17 @@ div[data-testid="stExpander"] details{background:var(--surf);border:1px solid va
   border-radius:var(--r2)!important}
 div[data-testid="stExpander"] summary{font-size:.82rem;font-weight:600;color:var(--ink2)}
 div[data-testid="stExpander"] summary:hover{color:var(--ink)}
+
+/* ---------- FIM DO PISCA-PISCA ----------
+   Medido no DOM: 62 contêineres carregam `data-stale` e `transition: all`.
+   Durante cada rerun o Streamlit marca data-stale="true" e reduz a opacidade
+   deles. Com auto-refresh a cada 15s, a tela inteira desbota e volta — é o
+   "apagando e acendendo". A informação já é atualizada de qualquer forma, então
+   o efeito não comunica nada: só cansa a vista de quem está esperando entrada. */
+[data-testid="stElementContainer"],
+[data-testid="stVerticalBlock"],
+[data-testid="stHorizontalBlock"]{transition:none!important}
+[data-stale="true"]{opacity:1!important;transition:none!important;filter:none!important}
 
 /* Rodapé discreto. */
 .foot{margin:var(--gap-secao) 0 8px;text-align:center;font-size:.66rem;color:var(--mut);
