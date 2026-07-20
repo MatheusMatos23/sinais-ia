@@ -771,11 +771,24 @@ def run_perf():
     return out
 
 
-pc = st.session_state.setdefault("perf", {})
-pk = (interval, candle_key(minutes), len(scan_list))
-if pk not in pc:
-    pc.clear(); pc[pk] = run_perf()
-perf = pc[pk]
+def get_perf():
+    """
+    Backtest do painel Desempenho. É a parte MAIS PESADA do app: baixa 1 mês de
+    velas de todos os ativos e roda as 11 estratégias em cima.
+
+    Duas decisões que valem pela latência da entrada:
+      1) só é chamada dentro da aba Desempenho — assim a aba Sinais renderiza
+         antes, sem esperar o backtest;
+      2) o cache é por BLOCO DE 10 MINUTOS, não por vela. Antes recalculava a
+         cada virada de vela, exatamente no instante mais crítico do app.
+    """
+    pc = st.session_state.setdefault("perf", {})
+    bucket = int(datetime.now(timezone.utc).timestamp() // 600)
+    pk = (interval, bucket, len(scan_list))
+    if pk not in pc:
+        pc.clear()
+        pc[pk] = run_perf()
+    return pc[pk]
 
 # ============================== TOPBAR ==============================
 if market_open(now):
@@ -1094,6 +1107,10 @@ with tab_sig:
             val += f' · {lag:.1f}min'
         cs.append(chip(SRC.get(src, src), val, alerta=(src == "yfinance")))
     cs.append(chip("Busca", f"{fetch_s:.1f}s"))
+    # Quanto tempo depois da virada da vela o sinal ficou pronto no servidor.
+    # (não inclui o trajeto até o navegador, mas é a maior parte do atraso)
+    pronto = _age + (time.perf_counter() - t_scan0)
+    cs.append(chip("Sinal pronto em", f"+{pronto:.1f}s da virada", alerta=(pronto > 5)))
     if TD_KEY:
         usados, lim, dia = td_status()
         cs.append(chip("Créditos TD", f"{usados}/{lim} min · {dia}/800 dia",
@@ -1182,6 +1199,7 @@ with tab_perf:
                 f'<span class="ci">IC95 {lo*100:.0f}–{hi*100:.0f}%</span><br>'
                 f'<span class="n">{n} ops</span><span class="verd {vc}">{vt}</span>')
 
+    perf = get_perf()          # só aqui: a aba Sinais não espera o backtest
     ranked = sorted(STRATEGIES, key=lambda k: (perf[k]["per"][1] / perf[k]["per"][0]) if perf[k]["per"][0] else 0,
                     reverse=True)
     top = ranked[0] if perf[ranked[0]]["per"][0] else None
