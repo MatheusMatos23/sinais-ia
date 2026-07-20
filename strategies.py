@@ -126,11 +126,20 @@ def strat_confluencia(d: pd.DataFrame, tf: str) -> pd.Series:
     return score.fillna(0.0)
 
 
+# E · FADE DE ROMPIMENTO — opera CONTRA o rompimento (rompimentos curtos falham
+# com frequência). É a única hipótese que sobreviveu a treino/teste out-of-sample
+# no EUR/USD 5min (55,5% no ano, 11 de 13 meses acima do breakeven de payout 90%).
+# Aviso: NÃO se confirmou em 1 min, onde a amostra disponível apontou o contrário.
+def strat_fade_rompimento(d: pd.DataFrame) -> pd.Series:
+    return -strat_rompimento(d)
+
+
 STRATEGIES = {
     "A · Tendência": strat_tendencia,
     "B · Reversão": strat_reversao,
     "C · Rompimento": strat_rompimento,
     "D · Confluência multi-TF": strat_confluencia,
+    "E · Fade de rompimento": strat_fade_rompimento,
 }
 NEEDS_TF = {"D · Confluência multi-TF"}
 
