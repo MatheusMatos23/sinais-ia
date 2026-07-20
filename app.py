@@ -709,7 +709,6 @@ div[data-testid="stMetricValue"]{font-family:'IBM Plex Mono',monospace;font-size
 [data-testid="stElementContainer"]:has(.wheel-pass) + [data-testid="stElementContainer"] iframe{
   pointer-events:none;              /* contador é só visual: deixa a roda passar */
 }
-[data-testid="stElementContainer"]:has(> iframe[title="st.iframe"]){margin:-2px 0 -6px}
 [data-testid="stElementContainer"] iframe{display:block}
 
 /* Abas fixas: em tabelas longas as abas saíam da tela e não dava para voltar
@@ -732,9 +731,12 @@ div[data-testid="stMetricValue"]{font-family:'IBM Plex Mono',monospace;font-size
    a cada rerun o Streamlit recria o iframe do contador, e enquanto ele não
    carrega o container pode ficar com altura 0, empurrando tudo que vem depois. */
 /* O iframe do contador não desenha nada (só roda o script que alimenta o
-   cabeçalho). Altura 0 é rejeitada pela API, então fica 1px e some no CSS. */
-[data-testid="stElementContainer"]:has(> iframe[title="st.iframe"]){min-height:0;
-  height:0;overflow:hidden;margin:0}
+   cabeçalho). Altura 0 é rejeitada pela API, então fica 1px e some no CSS.
+   ATENÇÃO: escopo pelo irmão do marcador .wheel-pass, NÃO por title. Os dois
+   iframes do app têm title="st.iframe"; a regra ampla espremia também o do
+   áudio, que ficava com barra de rolagem. */
+[data-testid="stElementContainer"]:has(.wheel-pass) + [data-testid="stElementContainer"]{
+  min-height:0;height:0;overflow:hidden;margin:0}
 
 /* ---------- BARRA DE CONTROLES ----------
    O <div class="ctrlbar"> não envolve as colunas (o Streamlit as renderiza como
@@ -1499,9 +1501,7 @@ with tab_sig:
             Ficar sem entrada na maior parte das velas é o comportamento esperado —
             filtro que dispara sempre não está filtrando nada.</span>
           </div>
-          <div class="e-side">
-            <span class="k">Próxima vela</span><span class="v mono">{cvela}</span>
-          </div></div>""", unsafe_allow_html=True)
+          </div>""", unsafe_allow_html=True)
 
     if audio_on:
         if entries:
@@ -1530,7 +1530,7 @@ with tab_sig:
           var per=TF*60,n=Date.now()/1000,pos=n%per,c=Math.floor(n/per);
           if(pos<{ENTRY_WINDOW}&&sessionStorage.getItem('dito')!=String(c)){{
             sessionStorage.setItem('dito',String(c));say(FALA);}}}})();
-        </script>""", height=44)
+        </script>""", height=54)
 
 # ============================== ABA DESEMPENHO ==============================
 with tab_perf:
