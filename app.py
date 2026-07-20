@@ -1107,10 +1107,16 @@ with tab_sig:
             val += f' · {lag:.1f}min'
         cs.append(chip(SRC.get(src, src), val, alerta=(src == "yfinance")))
     cs.append(chip("Busca", f"{fetch_s:.1f}s"))
-    # Quanto tempo depois da virada da vela o sinal ficou pronto no servidor.
-    # (não inclui o trajeto até o navegador, mas é a maior parte do atraso)
-    pronto = _age + (time.perf_counter() - t_scan0)
-    cs.append(chip("Sinal pronto em", f"+{pronto:.1f}s da virada", alerta=(pronto > 5)))
+    # Latência da VIRADA: só faz sentido medir no rerun disparado pela troca de
+    # vela. Num carregamento manual no meio da vela, _age é a idade da vela e não
+    # mede nada — por isso só grava dentro da janela de entrada, e nas demais
+    # execuções mostra a última medida válida.
+    if _age <= ENTRY_WINDOW:
+        st.session_state["turn_lat"] = _age + (time.perf_counter() - t_scan0)
+    tl = st.session_state.get("turn_lat")
+    cs.append(chip("Sinal pronto em",
+                   f"+{tl:.1f}s da virada" if tl is not None else "aguardando virada",
+                   alerta=(tl is not None and tl > 5)))
     if TD_KEY:
         usados, lim, dia = td_status()
         cs.append(chip("Créditos TD", f"{usados}/{lim} min · {dia}/800 dia",
