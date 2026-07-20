@@ -53,16 +53,24 @@ def html_box(code, height=0, **kw):
 # nitidez e acompanha a paleta do app.
 BRAND = "Kairo"
 BRAND_SUB = "signal scanner"
-LOGO_SVG = """<svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+# Monograma: a haste do "K" é o corpo de uma vela (com pavio em cima e embaixo);
+# os braços abrem como uma seta de entrada e terminam no ponto do sinal. Lê como
+# K e como marcação de entrada ao mesmo tempo, e continua nítido em 20px.
+LOGO_SVG = """<svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <linearGradient id="lg" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#00E39B"/><stop offset="1" stop-color="#0C8FD4"/>
+    <linearGradient id="kg" x1="8" y1="6" x2="33" y2="34" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#3BF0B4"/><stop offset="1" stop-color="#0C8FD4"/>
     </linearGradient>
   </defs>
-  <rect width="32" height="32" rx="9" fill="url(#lg)"/>
-  <path d="M8 20.5 L13 14.5 L17.5 18 L24 9.5" stroke="#04150F" stroke-width="2.4"
-        stroke-linecap="round" stroke-linejoin="round" opacity=".92"/>
-  <circle cx="24" cy="9.5" r="2.6" fill="#04150F" opacity=".92"/>
+  <rect x="1" y="1" width="38" height="38" rx="11.5" fill="#0A1018"
+        stroke="url(#kg)" stroke-width="1.7"/>
+  <path d="M13.4 7.5 V32.5" stroke="url(#kg)" stroke-width="1.5"
+        stroke-linecap="round" opacity=".5"/>
+  <rect x="10.9" y="11.5" width="5" height="17" rx="2.5" fill="url(#kg)"/>
+  <path d="M18.6 20 L26.4 12.6" stroke="url(#kg)" stroke-width="3.4" stroke-linecap="round"/>
+  <path d="M18.6 20 L26.4 27.4" stroke="url(#kg)" stroke-width="3.4" stroke-linecap="round"/>
+  <circle cx="27.4" cy="11.8" r="3.1" fill="#0A1018"/>
+  <circle cx="27.4" cy="11.8" r="2.5" fill="#3BF0B4"/>
 </svg>"""
 
 socket.setdefaulttimeout(8)
@@ -478,8 +486,11 @@ div[role="radiogroup"]{gap:3px!important;background:var(--surf);border:1px solid
   border-radius:10px;padding:4px;display:inline-flex;align-items:center;
   flex-wrap:nowrap!important;white-space:nowrap}
 div[role="radiogroup"] label{background:transparent;border:0;margin:0;
-  padding:6px 11px;border-radius:7px;font-weight:600;font-size:.78rem;
+  padding:6px 9px;border-radius:7px;font-weight:600;font-size:.78rem;
   transition:background .15s;cursor:pointer;white-space:nowrap;flex:0 0 auto}
+/* NÃO esconder a bolinha do rádio com `label div:first-child{display:none}`:
+   já tentei e o seletor pega também o container do texto, deixando o rádio
+   visualmente vazio. A folga veio de alargar a coluna, não de cortar elemento. */
 div[role="radiogroup"] label:hover{background:rgba(255,255,255,.04)}
 div[role="radiogroup"] label:has(input:checked){background:var(--surf2)}
 div[role="radiogroup"] [data-testid="stMarkdownContainer"] p{font-size:.8rem!important;
@@ -656,12 +667,8 @@ div[data-testid="stMetricValue"]{font-family:'IBM Plex Mono',monospace;font-size
   border:1px solid var(--line);border-radius:var(--r2);
   padding:14px 20px 12px;margin-bottom:14px;align-items:flex-end;gap:22px}
 [data-testid="stHorizontalBlock"]:has(.lbl) [data-testid="stElementContainer"]{margin-bottom:0}
-/* linha da chave "Ao vivo": encostada à direita, compacta */
-[data-testid="stHorizontalBlock"]:has(.livewrap){margin:-6px 0 2px}
-[data-testid="stHorizontalBlock"]:has(.livewrap) [data-testid="stCheckbox"]{
-  display:flex;justify-content:flex-end}
-[data-testid="stHorizontalBlock"]:has(.livewrap) label p{
-  font-size:.72rem!important;color:var(--ink2)!important;font-weight:600!important}
+/* o toggle "Ao vivo" desce um pouco para alinhar com a base dos outros campos */
+[data-testid="stHorizontalBlock"]:has(.lbl) [data-testid="stCheckbox"]{padding-bottom:6px}
 div[data-testid="stExpander"]{margin-bottom:4px}
 @media(max-width:900px){.hero{grid-template-columns:1fr}.hero-side{border-left:0;border-top:1px solid var(--line)}}
 </style>
@@ -670,9 +677,14 @@ div[data-testid="stExpander"]{margin-bottom:4px}
 # ============================== CONTROLES (no corpo da página) ==============================
 topbar_slot = st.empty()          # a barra de status é preenchida depois (precisa dos dados)
 st.markdown('<div class="ctrlbar">', unsafe_allow_html=True)
-# Três colunas, não quatro: com quatro o rádio de timeframe era cortado e o
-# toggle caía para uma segunda linha. A chave "Ao vivo" foi para a linha das abas.
-cc1, cc2, cc3 = st.columns([1.05, 2.45, 1.05], vertical_alignment="bottom")
+# Larguras medidas pelo conteúdo real, não por estética:
+#   timeframe  -> 3 opções de rádio lado a lado, ~290px
+#   estratégias-> 3 chips + botão limpar, ~470px
+#   força      -> slider com rótulo
+#   ao vivo    -> só o toggle
+# Foi apertar a primeira coluna que fez o "15 min" encostar na caixa ao lado.
+cc1, cc2, cc3, cc4 = st.columns([1.35, 2.15, 1.05, 0.55],
+                                vertical_alignment="bottom")
 with cc1:
     st.markdown('<div class="lbl">Timeframe</div>', unsafe_allow_html=True)
     tf_label = st.radio("tf", ["1 min", "5 min", "15 min"], index=1, horizontal=True,
@@ -692,17 +704,13 @@ with cc3:
     st.markdown('<div class="lbl">Força mínima</div>', unsafe_allow_html=True)
     min_force = st.select_slider("fm", options=["FRACA", "MÉDIA", "FORTE"], value="FRACA",
                                  label_visibility="collapsed")
-st.markdown('</div>', unsafe_allow_html=True)
-
-# Chave "Ao vivo" alinhada à direita, logo abaixo da barra de controles. Tem de
-# ser criada antes do expander (o slider de intervalo depende dela) e antes do
-# st_autorefresh, que lê o valor.
-_lv1, _lv2 = st.columns([4.15, 1.0], vertical_alignment="center")
-with _lv2:
-    st.markdown('<div class="livewrap"></div>', unsafe_allow_html=True)
+with cc4:
+    st.markdown('<div class="lbl">Ao vivo</div>', unsafe_allow_html=True)
     auto_on = st.toggle("Ao vivo", value=True, key="auto_on_top",
+                        label_visibility="collapsed",
                         help="Ligado, a página se atualiza sozinha a cada poucos "
                              "segundos. Desligue para ler as tabelas paradas.")
+st.markdown('</div>', unsafe_allow_html=True)
 
 with st.expander("Mais opções — filtros, áudio, payout e atualização"):
     o1, o2, o3 = st.columns(3)
@@ -718,7 +726,7 @@ with st.expander("Mais opções — filtros, áudio, payout e atualização"):
         st.markdown("**Análise e atualização**")
         payout_lbl = st.radio("Payout padrão da corretora", ["80%", "90%"], index=0,
                               horizontal=True)
-        st.caption("A chave *Ao vivo* fica logo abaixo da barra de controles.")
+        st.caption("A chave *Ao vivo* fica na barra de controles, no topo.")
         every = st.slider("Intervalo (s)", 10, 60, 15, step=5, disabled=not auto_on)
     st.markdown("**Payout por ativo** — o breakeven muda com o payout, então vale "
                 "conferir o de cada par na sua corretora. Em branco = usa o padrão.")
