@@ -42,8 +42,12 @@ from strategies import (STRATEGIES, add_indicators, score_of, classify,
 # (01/06/2026). Usa st.iframe onde existir, mantendo o fallback para rodar
 # em instalações locais com Streamlit antigo.
 def html_box(code, height=0, **kw):
-    fn = getattr(st, "iframe", None) or components.html
-    return fn(code, height=height, **kw)
+    fn = getattr(st, "iframe", None)
+    if fn is not None:
+        # height="content" ajusta o iframe ao conteúdo: sem barra de rolagem
+        # e sem o vão que a altura fixa deixava embaixo.
+        return fn(code, height="content", **kw)
+    return components.html(code, height=height, **kw)
 
 socket.setdefaulttimeout(8)
 st.set_page_config(page_title="Sinais IA", page_icon="⚡", layout="wide",
@@ -574,7 +578,8 @@ div[data-testid="stMetricValue"]{font-family:'IBM Plex Mono',monospace;font-size
 .chip.warn{border-color:rgba(217,164,65,.35);background:rgba(217,164,65,.08)}
 .chip.warn .cv{color:var(--warn)}
 /* remove o vão que o iframe do contador cria */
-div[data-testid="element-container"]:has(iframe){margin-top:-10px;margin-bottom:-14px}
+div[data-testid="element-container"]:has(iframe){margin-top:-4px;margin-bottom:-4px}
+div[data-testid="element-container"] iframe{display:block}
 div[data-testid="stExpander"]{margin-bottom:4px}
 @media(max-width:900px){.hero{grid-template-columns:1fr}.hero-side{border-left:0;border-top:1px solid var(--line)}}
 </style>
