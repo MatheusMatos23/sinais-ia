@@ -707,10 +707,49 @@ div[data-testid="stMetricValue"]{font-family:'IBM Plex Mono',monospace;font-size
 [data-testid="stHorizontalBlock"]:has(.lbl){
   background:linear-gradient(180deg,rgba(255,255,255,.022),transparent 70%),var(--surf);
   border:1px solid var(--line);border-radius:var(--r2);
-  padding:14px 20px 12px;margin-bottom:14px;align-items:flex-end;gap:22px}
+  padding:14px 20px 14px;margin-bottom:14px;align-items:flex-start;gap:22px}
 [data-testid="stHorizontalBlock"]:has(.lbl) [data-testid="stElementContainer"]{margin-bottom:0}
+/* com 4+ estratégias a caixa do meio cresce; ancorando tudo no topo, as colunas
+   vizinhas não são empurradas para o meio da altura */
+[data-testid="stHorizontalBlock"]:has(.lbl) [data-testid="stSelectSlider"]{padding-top:10px}
+.stMultiSelect [data-baseweb="select"]>div{flex-wrap:wrap}
 div[data-testid="stExpander"]{margin-bottom:4px}
 @media(max-width:900px){.hero{grid-template-columns:1fr}.hero-side{border-left:0;border-top:1px solid var(--line)}}
+
+/* ---------- ACABAMENTO ---------- */
+/* Abas: pílulas em vez de sublinhado solto; a ativa ganha corpo. */
+[data-testid="stTabs"] [role="tablist"]{gap:4px;padding:6px 0 0}
+[data-testid="stTabs"] [role="tab"]{border-radius:9px;padding:7px 15px!important;
+  color:var(--mut);font-weight:600;font-size:.83rem;transition:color .15s,background .15s}
+[data-testid="stTabs"] [role="tab"]:hover{color:var(--ink2);background:rgba(255,255,255,.035)}
+[data-testid="stTabs"] [role="tab"][aria-selected="true"]{color:var(--ink);background:var(--surf2)}
+[data-testid="stTabs"] [data-baseweb="tab-highlight"],
+[data-testid="stTabs"] [data-baseweb="tab-border"]{display:none!important}
+
+/* Tabelas: cabeçalho fixo ao rolar, zebra sutil e linha destacada no hover. */
+.tbl{border-collapse:separate;border-spacing:0}
+.tbl th{position:sticky;top:52px;z-index:9;background:var(--bg);
+  backdrop-filter:blur(6px);box-shadow:0 1px 0 var(--line)}
+.tbl tbody tr:hover td,.tbl tr:hover td{background:rgba(255,255,255,.022)}
+.tbl tr.on:hover td{background:rgba(0,200,138,.06)}
+
+/* Botões: acabamento consistente com os cartões. */
+.stButton>button{background:var(--surf2);border:1px solid var(--line2);border-radius:10px;
+  color:var(--ink);font-weight:600;font-size:.8rem;padding:9px 16px;transition:.15s}
+.stButton>button:hover{border-color:var(--buy);color:var(--buy);
+  background:rgba(0,200,138,.08)}
+.stDownloadButton>button{background:var(--surf2);border:1px solid var(--line2);
+  border-radius:10px;color:var(--ink2);font-weight:600;font-size:.78rem}
+
+/* Expander com a mesma pele dos cartões. */
+div[data-testid="stExpander"] details{background:var(--surf);border:1px solid var(--line)!important;
+  border-radius:var(--r2)!important}
+div[data-testid="stExpander"] summary{font-size:.82rem;font-weight:600;color:var(--ink2)}
+div[data-testid="stExpander"] summary:hover{color:var(--ink)}
+
+/* Rodapé discreto. */
+.foot{margin:38px 0 8px;text-align:center;font-size:.66rem;color:var(--mut);
+  border-top:1px solid var(--line);padding-top:16px}
 </style>
 """, unsafe_allow_html=True)
 
@@ -726,7 +765,10 @@ st.markdown('<div class="ctrlbar">', unsafe_allow_html=True)
 # Três colunas. A chave "Ao vivo" saiu daqui: ela é um link no cabeçalho, HTML
 # meu, onde o alinhamento é controlável. Tentar encaixá-la como quarta coluna
 # quebrou a linha três vezes seguidas.
-cc1, cc2, cc3 = st.columns([1.35, 2.35, 1.15], vertical_alignment="bottom")
+# Alinhamento pelo TOPO, não pela base. Com 4+ estratégias a caixa do meio
+# cresce para baixo; com alinhamento pela base ela empurrava os rótulos das
+# colunas vizinhas para o meio da altura, desalinhando a barra inteira.
+cc1, cc2, cc3 = st.columns([1.35, 2.35, 1.15], vertical_alignment="top")
 with cc1:
     st.markdown('<div class="lbl">Timeframe</div>', unsafe_allow_html=True)
     tf_label = st.radio("tf", ["1 min", "5 min", "15 min"], index=1, horizontal=True,
