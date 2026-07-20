@@ -48,8 +48,25 @@ def html_box(code, height=0, **kw):
         return fn(code, height=height, **kw)
     return components.html(code, height=height, **kw)
 
+# ============================== MARCA ==============================
+# Trocar o nome é uma linha só. O símbolo é SVG inline: escala sem perder
+# nitidez e acompanha a paleta do app.
+BRAND = "Kairo"
+BRAND_SUB = "signal scanner"
+LOGO_SVG = """<svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="lg" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#00E39B"/><stop offset="1" stop-color="#0C8FD4"/>
+    </linearGradient>
+  </defs>
+  <rect width="32" height="32" rx="9" fill="url(#lg)"/>
+  <path d="M8 20.5 L13 14.5 L17.5 18 L24 9.5" stroke="#04150F" stroke-width="2.4"
+        stroke-linecap="round" stroke-linejoin="round" opacity=".92"/>
+  <circle cx="24" cy="9.5" r="2.6" fill="#04150F" opacity=".92"/>
+</svg>"""
+
 socket.setdefaulttimeout(8)
-st.set_page_config(page_title="Sinais IA", page_icon="⚡", layout="wide",
+st.set_page_config(page_title=BRAND, page_icon="⚡", layout="wide",
                    initial_sidebar_state="collapsed")
 
 ASSETS = [
@@ -71,6 +88,16 @@ TF_LABEL = {"1": "1 min", "5": "5 min", "15": "15 min"}
 TF_YF = {"1": "1m", "5": "5m", "15": "15m"}
 TF_PERIOD = {"1m": "7d", "5m": "1mo", "15m": "1mo"}      # janela grande: backtest
 TF_PERIOD_LIVE = {"1m": "1d", "5m": "2d", "15m": "5d"}   # janela curta: sinal ao vivo
+# Rótulo curto para os chips do seletor. Encurtar por regra automática deixava
+# E, G e I todos como "Fade" — aqui cada uma mantém o que a distingue.
+CHIP = {
+    "A · Tendência": "A · Tendência", "B · Reversão": "B · Reversão",
+    "C · Rompimento": "C · Rompimento", "D · Confluência multi-TF": "D · Multi-TF",
+    "E · Fade de rompimento": "E · Fade romp.", "F · Exaustão": "F · Exaustão",
+    "G · Fade vela extrema": "G · Vela extrema", "H · Z-score reversão": "H · Z-score",
+    "I · Fade extremo lateral": "I · Lateral", "J · Z-score forte": "J · Z-score forte",
+    "K · Reversão dupla": "K · Rev. dupla",
+}
 FORCE_ORDER = {"FRACA": 1, "MEDIA": 2, "FORTE": 3}
 FL = {"FRACA": "FRACA", "MEDIA": "MÉDIA", "FORTE": "FORTE"}
 
@@ -413,13 +440,20 @@ st.markdown("""
 hr{border-color:var(--line)}
 
 /* ---------- HEADER ---------- */
-.hdr{display:flex;align-items:center;justify-content:space-between;gap:24px;
-  background:var(--surf);border:1px solid var(--line);border-radius:var(--r2);
-  padding:16px 22px;margin-bottom:18px}
-.hdr-l{display:flex;align-items:center;gap:26px;flex-wrap:wrap}
-.brand{display:flex;align-items:center;gap:10px;font-weight:600;font-size:1rem;letter-spacing:-.01em}
-.brand .mk{width:22px;height:22px;border-radius:7px;background:linear-gradient(135deg,var(--buy),#0EA5C6);
-  display:flex;align-items:center;justify-content:center;font-size:.7rem;color:#04150F;font-weight:700}
+.hdr{display:flex;align-items:center;justify-content:space-between;gap:22px;
+  background:linear-gradient(180deg,rgba(255,255,255,.028),transparent 60%),var(--surf);
+  border:1px solid var(--line);border-radius:var(--r2);
+  padding:14px 20px;margin-bottom:16px}
+.hdr-l{display:flex;align-items:center;gap:22px;flex-wrap:wrap}
+/* ---- marca ---- */
+.brand{display:flex;align-items:center;gap:11px}
+.brand svg{width:32px;height:32px;flex:none;border-radius:10px;
+  box-shadow:0 3px 14px -4px rgba(0,200,138,.55)}
+.wm{display:flex;flex-direction:column;line-height:1.05}
+.wm b{font-size:1.06rem;font-weight:600;letter-spacing:-.025em;color:#fff}
+.wm span{font-size:.56rem;letter-spacing:.2em;text-transform:uppercase;
+  color:var(--mut);font-weight:600;margin-top:3px}
+.vbar{width:1px;height:30px;background:var(--line2);flex:none}
 .meta{display:flex;flex-direction:column;gap:3px}
 .meta .k{font-size:.58rem;letter-spacing:.14em;color:var(--mut);font-weight:600;text-transform:uppercase}
 .meta .v{font-size:.82rem;font-weight:600;color:var(--ink2)}
@@ -611,6 +645,19 @@ div[data-testid="stMetricValue"]{font-family:'IBM Plex Mono',monospace;font-size
    a cada rerun o Streamlit recria o iframe do contador, e enquanto ele não
    carrega o container pode ficar com altura 0, empurrando tudo que vem depois. */
 [data-testid="stElementContainer"]:has(> iframe[title="st.iframe"]){min-height:58px}
+
+/* ---------- BARRA DE CONTROLES ----------
+   O <div class="ctrlbar"> não envolve as colunas (o Streamlit as renderiza como
+   irmãs), então o cartão é aplicado no próprio bloco horizontal. Ele é
+   identificado por conter os rótulos .lbl, que só existem aqui. */
+.ctrlbar{display:none}
+[data-testid="stHorizontalBlock"]:has(.lbl){
+  background:linear-gradient(180deg,rgba(255,255,255,.022),transparent 70%),var(--surf);
+  border:1px solid var(--line);border-radius:var(--r2);
+  padding:14px 20px 12px;margin-bottom:14px;align-items:flex-end;gap:22px}
+[data-testid="stHorizontalBlock"]:has(.lbl) [data-testid="stElementContainer"]{margin-bottom:0}
+/* alinha o toggle "Ao vivo" com a base dos outros controles */
+[data-testid="stHorizontalBlock"]:has(.lbl) [data-testid="stCheckbox"]{padding-bottom:5px}
 div[data-testid="stExpander"]{margin-bottom:4px}
 @media(max-width:900px){.hero{grid-template-columns:1fr}.hero-side{border-left:0;border-top:1px solid var(--line)}}
 </style>
@@ -619,7 +666,9 @@ div[data-testid="stExpander"]{margin-bottom:4px}
 # ============================== CONTROLES (no corpo da página) ==============================
 topbar_slot = st.empty()          # a barra de status é preenchida depois (precisa dos dados)
 st.markdown('<div class="ctrlbar">', unsafe_allow_html=True)
-cc1, cc2, cc3, cc4 = st.columns([1.05, 1.85, 0.95, 0.6])
+# A caixa de estratégias precisa de espaço: com pouca largura os chips quebram
+# em duas linhas e desalinham a barra inteira. Ela leva a maior fatia.
+cc1, cc2, cc3, cc4 = st.columns([0.92, 2.75, 0.95, 0.62], vertical_alignment="bottom")
 with cc1:
     st.markdown('<div class="lbl">Timeframe</div>', unsafe_allow_html=True)
     tf_label = st.radio("tf", ["1 min", "5 min", "15 min"], index=1, horizontal=True,
@@ -630,6 +679,7 @@ with cc2:
     default_sel = [k for k in ("G · Fade vela extrema", "J · Z-score forte", "K · Reversão dupla")
                    if k in STRATEGIES]
     sel_strats = st.multiselect("est", list(STRATEGIES), default=default_sel,
+                                format_func=lambda s: CHIP.get(s, s),
                                 placeholder="Escolha uma ou mais estratégias",
                                 label_visibility="collapsed")
     if not sel_strats:
@@ -644,8 +694,9 @@ with cc4:
     # Aqui em cima porque é o controle que resolve o problema na hora.
     st.markdown('<div class="lbl">Ao vivo</div>', unsafe_allow_html=True)
     auto_on = st.toggle("Atualizar", value=True, key="auto_on_top",
-                        help="Desligue para ler as tabelas sem a página se refazer "
-                             "a cada poucos segundos.")
+                        label_visibility="collapsed",
+                        help="Ligado, a página se atualiza sozinha a cada poucos "
+                             "segundos. Desligue para ler as tabelas paradas.")
 st.markdown('</div>', unsafe_allow_html=True)
 
 with st.expander("Mais opções — filtros, áudio, payout e atualização"):
@@ -860,7 +911,9 @@ else:
 topbar_slot.markdown(f"""
 <div class="hdr">
   <div class="hdr-l">
-    <div class="brand"><span class="mk">S</span>Sinais IA</div>
+    <div class="brand">{LOGO_SVG}
+      <div class="wm"><b>{BRAND}</b><span>{BRAND_SUB}</span></div></div>
+    <div class="vbar"></div>
     <div class="meta"><span class="k">Status</span><span class="v">{stat}</span></div>
     <div class="meta"><span class="k">Sessões</span><span class="v">{sess}</span></div>
     <div class="meta"><span class="k">Varredura</span><span class="v">{len(scan_list)} ativos</span></div>
