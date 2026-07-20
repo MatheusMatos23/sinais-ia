@@ -16,7 +16,9 @@ import json
 import math
 import os
 import socket
+import threading
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 
@@ -150,12 +152,60 @@ def _td_to_df(values):
     return df
 
 
+# --- Orçamento de créditos (plano grátis: 8 por minuto, 800 por dia) ---
+# Módulo-global: compartilhado por TODAS as abas/sessões do mesmo servidor.
+TD_LIMIT_MIN = 8
+_td_lock = threading.Lock()
+_td_spent = deque()          # timestamps dos créditos gastos (janela de 60 s)
+_td_day = [0, None]          # [créditos no dia, data UTC]
+
+
+def td_budget(n):
+    """Reserva n créditos se couber na janela de 60 s. True = pode buscar."""
+    now = time.time()
+    today = datetime.now(timezone.utc).date()
+    with _td_lock:
+        while _td_spent and now - _td_spent[0] > 60:
+            _td_spent.popleft()
+        if _td_day[1] != today:
+            _td_day[0], _td_day[1] = 0, today
+        if len(_td_spent) + n > TD_LIMIT_MIN:
+            return False
+        for _ in range(n):
+            _td_spent.append(now)
+        _td_day[0] += n
+        return True
+
+
+def td_status():
+    now = time.time()
+    with _td_lock:
+        while _td_spent and now - _td_spent[0] > 60:
+            _td_spent.popleft()
+        return len(_td_spent), TD_LIMIT_MIN, _td_day[0]
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def td_fetch_cached(symbols_key, interval, candle, outputsize=250):
+    """
+    Cache CROSS-SESSION: várias abas abertas compartilham a mesma busca,
+    então N abas continuam gastando os mesmos créditos de 1 busca por vela.
+    `candle` entra na chave só para invalidar a cada vela nova.
+    """
+    return td_fetch(list(symbols_key), interval, outputsize)
+
+
 def td_fetch(symbols, interval, outputsize=250):
     """
     Busca vários símbolos em UMA requisição (1 crédito por símbolo).
     Retorna {símbolo: DataFrame} — só os que vieram OK.
     """
     if not TD_KEY or not symbols:
+        return {}
+    if not td_budget(len(symbols)):
+        st.session_state["td_erro"] = (
+            f"orçamento de {TD_LIMIT_MIN} créditos/min já usado neste minuto — "
+            "usando yfinance nesta vela")
         return {}
     import requests
     try:
@@ -219,7 +269,9 @@ def get_data_live(assets, interval, minutes):
         if TD_KEY:
             fx = [a for a in pend if a["type"] == "fx"]
             if fx:
-                got = td_fetch([a["name"] for a in fx], interval)
+                st.session_state.pop("td_erro", None)      # erro é por vela, não permanente
+                syms = tuple(sorted(a["name"] for a in fx))
+                got = td_fetch_cached(syms, interval, ck)
                 for a in fx:
                     d = got.get(a["name"])
                     if d is not None and len(d):
@@ -826,8 +878,12 @@ with tab_sig:
         fonte_txt = "<b>yfinance</b> (sem chave da Twelve Data)"
     det = " · ".join(f"{'TD' if k == 'twelvedata' else 'YF'} <b>{v:.1f}min</b>"
                      for k, v in sorted(lag_fonte.items()))
+    cred = ""
+    if TD_KEY:
+        usados, lim, dia = td_status()
+        cred = f' · créditos TD <b>{usados}/{lim}</b> no minuto, <b>{dia}</b> hoje (máx. 800)'
     st.markdown(f'<div class="lat">{fonte_txt} · busca <b>{fetch_s:.1f}s</b> · '
-                f'atraso por fonte: {det}</div>', unsafe_allow_html=True)
+                f'atraso por fonte: {det}{cred}</div>', unsafe_allow_html=True)
 
     if entries:
         dim = "" if window_open else " stale"
