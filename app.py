@@ -42,11 +42,10 @@ from strategies import (STRATEGIES, add_indicators, score_of, classify,
 # (01/06/2026). Usa st.iframe onde existir, mantendo o fallback para rodar
 # em instalações locais com Streamlit antigo.
 def html_box(code, height=0, **kw):
+    # height="content" mede alto demais e abre um vão; altura fixa fica exata.
     fn = getattr(st, "iframe", None)
     if fn is not None:
-        # height="content" ajusta o iframe ao conteúdo: sem barra de rolagem
-        # e sem o vão que a altura fixa deixava embaixo.
-        return fn(code, height="content", **kw)
+        return fn(code, height=height, **kw)
     return components.html(code, height=height, **kw)
 
 socket.setdefaulttimeout(8)
@@ -578,7 +577,7 @@ div[data-testid="stMetricValue"]{font-family:'IBM Plex Mono',monospace;font-size
 .chip.warn{border-color:rgba(217,164,65,.35);background:rgba(217,164,65,.08)}
 .chip.warn .cv{color:var(--warn)}
 /* remove o vão que o iframe do contador cria */
-div[data-testid="element-container"]:has(iframe){margin-top:-4px;margin-bottom:-4px}
+div[data-testid="element-container"]:has(iframe){margin-top:-8px;margin-bottom:-12px}
 div[data-testid="element-container"] iframe{display:block}
 div[data-testid="stExpander"]{margin-bottom:4px}
 @media(max-width:900px){.hero{grid-template-columns:1fr}.hero-side{border-left:0;border-top:1px solid var(--line)}}
@@ -824,7 +823,7 @@ m=Math.floor(l/60),s=Math.floor(l%60);
 document.getElementById('k').textContent=(m<10?'0':'')+m+':'+(s<10?'0':'')+s;
 document.getElementById('f').style.width=((pos/per)*100).toFixed(1)+'%';
 document.getElementById('e').innerHTML=pos<{ENTRY_WINDOW}?'<span class="badge" style="animation:pulse 1.1s infinite">ENTRADA VÁLIDA</span>':'';}}
-t();setInterval(t,1000);</script>""", height=52)
+t();setInterval(t,1000);</script>""", height=58)
 
 def _short(nm):
     return nm.split("·")[0].strip()
