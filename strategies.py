@@ -48,6 +48,16 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     d["lower_wick"] = np.minimum(c, o) - l
     d["bull"] = c > o
     d["bear"] = c < o
+    # ADX(14) — força de tendência. Baixo = mercado lateral (favorável a reversão).
+    up_m, dn_m = h.diff(), -l.diff()
+    plus = pd.Series(np.where((up_m > dn_m) & (up_m > 0), up_m, 0.0), index=d.index)
+    minus = pd.Series(np.where((dn_m > up_m) & (dn_m > 0), dn_m, 0.0), index=d.index)
+    tr = pd.concat([h - l, (h - c.shift()).abs(), (l - c.shift()).abs()], axis=1).max(axis=1)
+    atr14 = tr.ewm(alpha=1/14, adjust=False).mean()
+    pdi = 100 * plus.ewm(alpha=1/14, adjust=False).mean() / atr14.replace(0, np.nan)
+    mdi = 100 * minus.ewm(alpha=1/14, adjust=False).mean() / atr14.replace(0, np.nan)
+    dx = 100 * (pdi - mdi).abs() / (pdi + mdi).replace(0, np.nan)
+    d["adx"] = dx.ewm(alpha=1/14, adjust=False).mean().fillna(50)
     return d
 
 
@@ -170,6 +180,27 @@ def strat_zscore(d: pd.DataFrame, z: float = 1.8) -> pd.Series:
     return score.fillna(0.0)
 
 
+# ---- Refinamentos (promovidos para validação independente ao vivo) ----
+# I · G apenas em mercado lateral (ADX<25). J · Z-score mais exigente (z>=2.2).
+# K · G e H concordando + lateral (o mais restritivo — e o mais suspeito de
+#     estar superajustado: foi o melhor no teste do EUR/USD, 62,4%).
+def strat_fade_lateral(d: pd.DataFrame) -> pd.Series:
+    return strat_fade_extremo(d).where(d["adx"] < 25, 0.0)
+
+
+def strat_zscore_forte(d: pd.DataFrame) -> pd.Series:
+    return strat_zscore(d, z=2.2)
+
+
+def strat_reversao_dupla(d: pd.DataFrame) -> pd.Series:
+    g, h = strat_fade_extremo(d), strat_zscore(d)
+    lateral = d["adx"] < 25
+    score = pd.Series(0.0, index=d.index)
+    score[(g > 0) & (h > 0) & lateral] = 0.85
+    score[(g < 0) & (h < 0) & lateral] = -0.85
+    return score
+
+
 STRATEGIES = {
     "A · Tendência": strat_tendencia,
     "B · Reversão": strat_reversao,
@@ -179,6 +210,9 @@ STRATEGIES = {
     "F · Exaustão": strat_exaustao,
     "G · Fade vela extrema": strat_fade_extremo,
     "H · Z-score reversão": strat_zscore,
+    "I · Fade extremo lateral": strat_fade_lateral,
+    "J · Z-score forte": strat_zscore_forte,
+    "K · Reversão dupla": strat_reversao_dupla,
 }
 NEEDS_TF = {"D · Confluência multi-TF"}
 
