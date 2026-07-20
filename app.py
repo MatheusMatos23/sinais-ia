@@ -593,6 +593,37 @@ div[data-testid="stExpander"] summary:hover{color:var(--ink)}
 .v-good{background:var(--buy-dim);color:var(--buy)}
 .v-bad{background:var(--sell-dim);color:var(--sell)}
 .v-mid{background:rgba(217,164,65,.10);color:var(--warn)}
+/* amostra pequena: número apagado de propósito, para não competir com os que
+   têm base estatística. 70% em 30 operações não é melhor que 54% em 4000. */
+.wr.faint{color:var(--mut);font-weight:500}
+.v-faint{background:rgba(255,255,255,.045);color:var(--mut)}
+.tbl tr:has(.v-faint) .nm{color:var(--ink2);font-weight:500}
+
+/* ---------- CARTÕES DE NÚMERO (topo do Histórico) ---------- */
+.statrow{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;
+  margin:18px 0 6px}
+.stat{background:var(--surf);border:1px solid var(--line);border-radius:var(--r);
+  padding:14px 16px;display:flex;flex-direction:column;gap:5px;min-width:0}
+.stat .k{font-size:.58rem;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--mut);font-weight:600}
+.stat .v{font-family:'IBM Plex Mono',monospace;font-size:1.6rem;font-weight:600;
+  color:var(--ink);line-height:1.1;font-variant-numeric:tabular-nums}
+.stat .x{font-size:.66rem;color:var(--mut);line-height:1.35}
+
+/* ---------- BARRA DE RESUMO (topo do Desempenho) ---------- */
+.sumbar{display:flex;align-items:center;justify-content:space-between;gap:24px;flex-wrap:wrap;
+  background:var(--surf);border:1px solid var(--line);border-left:3px solid var(--line2);
+  border-radius:var(--r);padding:16px 20px;margin:18px 0 4px}
+.sumbar.good{border-left-color:var(--buy)}
+.sumbar.mid{border-left-color:var(--warn)}
+.sumbar .s-main{font-size:.92rem;color:var(--ink2);line-height:1.5}
+.sumbar .big{font-family:'IBM Plex Mono',monospace;font-size:1.5rem;font-weight:700;
+  margin-right:7px;vertical-align:-2px}
+.sumbar .s-side{display:flex;gap:26px;flex-wrap:wrap}
+.sumbar .s-side span{display:flex;flex-direction:column;gap:3px;font-size:.62rem;
+  letter-spacing:.1em;text-transform:uppercase;color:var(--mut);font-weight:600}
+.sumbar .s-side i{font-family:'IBM Plex Mono',monospace;font-style:normal;font-size:1.02rem;
+  color:var(--ink);font-weight:600;letter-spacing:0;text-transform:none}
 .tagmini{font-size:.54rem;font-weight:600;letter-spacing:.06em;padding:2px 6px;border-radius:5px;
   background:var(--surf2);color:var(--mut);border:1px solid var(--line);margin-left:7px}
 .note{margin-top:18px;font-size:.72rem;color:var(--mut);border-left:2px solid var(--line2);
@@ -1353,12 +1384,24 @@ with tab_perf:
     VS = {"acima": ("v-good", "acima do breakeven"), "abaixo": ("v-bad", "abaixo do breakeven"),
           "inconclusivo": ("v-mid", "não conclusivo"), "sem dados": ("v-mid", "sem dados")}
 
+    N_MIN = 200          # abaixo disso o IC é largo demais para significar algo
+
     def cell(n, w):
+        """
+        Célula de taxa. Amostra pequena é DESTACADA PARA BAIXO de propósito:
+        com 30 operações, 70% e 45% são estatisticamente a mesma coisa, e um
+        número grande em verde faz o olho acreditar no que o dado não sustenta.
+        """
         if n == 0:
             return '<span class="wr mid">—</span><br><span class="n">0 ops</span>'
         p, lo, hi = wilson_ci(w, n)
         v = verdict(w, n, PAYOUT)
         vc, vt = VS[v]
+        if n < N_MIN:
+            return (f'<span class="wr faint">{p*100:.1f}%</span>'
+                    f'<span class="ci">IC95 {lo*100:.0f}–{hi*100:.0f}%</span><br>'
+                    f'<span class="n">{n} ops</span>'
+                    f'<span class="verd v-faint">amostra pequena</span>')
         cls = "good" if v == "acima" else ("bad" if v == "abaixo" else "mid")
         return (f'<span class="wr {cls}">{p*100:.1f}%</span>'
                 f'<span class="ci">IC95 {lo*100:.0f}–{hi*100:.0f}%</span><br>'
@@ -1366,7 +1409,7 @@ with tab_perf:
 
     # Recálculo sob demanda: nada aqui roda sozinho, senão trava a aba Sinais.
     cp = get_perf()
-    bc1, bc2 = st.columns([1, 3])
+    bc1, bc2 = st.columns([0.62, 4], vertical_alignment="center")
     with bc1:
         pedir = st.button("Calcular" if cp is None else "Recalcular",
                           use_container_width=True, key="btn_perf")
@@ -1390,8 +1433,37 @@ with tab_perf:
         top = ranked[0] if perf[ranked[0]]["per"][0] else None
         proven = bool(top) and verdict(perf[top]["per"][1], perf[top]["per"][0], PAYOUT) == "acima"
 
+        # ---- resumo: a resposta antes da tabela ----
+        acima, abaixo, incon, total_ops = 0, 0, 0, 0
+        for nm_, p_ in perf.items():
+            n_, w_ = p_["per"]
+            total_ops += n_
+            if n_ < N_MIN:
+                incon += 1
+                continue
+            v_ = verdict(w_, n_, PAYOUT)
+            acima += v_ == "acima"
+            abaixo += v_ == "abaixo"
+            incon += v_ == "inconclusivo"
+        if acima:
+            veredito = (f'<b class="big good">{acima}</b> estratégia(s) com vantagem '
+                        f'estatística sobre o breakeven')
+            vcls = "good"
+        else:
+            veredito = ('<b class="big mid">Nenhuma</b> estratégia comprovou vantagem '
+                        'sobre o breakeven neste período')
+            vcls = "mid"
+        st.markdown(
+            f'<div class="sumbar {vcls}"><div class="s-main">{veredito}</div>'
+            f'<div class="s-side"><span><i>{abaixo}</i> abaixo do breakeven</span>'
+            f'<span><i>{incon}</i> sem conclusão</span>'
+            f'<span><i>{total_ops:,}</i> operações analisadas</span></div></div>'
+            .replace(",", "."), unsafe_allow_html=True)
+
+        # Ordenado pela taxa do período, não em ordem alfabética: a pergunta é
+        # "qual funciona melhor", então a resposta tem de estar na primeira linha.
         rows = ""
-        for name in STRATEGIES:
+        for name in ranked:
             p = perf[name]
             tag = ""
             if name == top:
@@ -1403,7 +1475,8 @@ with tab_perf:
                      f'<td>{cell(*p["hoje"])}</td><td>{cell(*p["per"])}</td></tr>')
 
         st.markdown(f'<div class="sect">Desempenho · {TF_LABEL[TF]} · payout {payout_lbl} '
-                    f'· breakeven {BE:.2f}%</div>', unsafe_allow_html=True)
+                    f'· breakeven {BE:.2f}% · ordenado pela taxa do período</div>',
+                    unsafe_allow_html=True)
         st.markdown(f'<table class="tbl"><tr><th>Estratégia</th><th>Hoje</th>'
                     f'<th>Período ({TF_PERIOD[interval]})</th></tr>{rows}</table>', unsafe_allow_html=True)
         st.markdown('<div class="note"><b>Como ler:</b> a taxa é medida operando toda vez que a estratégia '
@@ -1427,19 +1500,32 @@ with tab_hist:
         emp = sum(1 for h in hist if h["res"] == "empate")
         abertos = sum(1 for h in hist if h["res"] is None)
         taxa = (g / len(fechados) * 100) if fechados else float("nan")
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Sinais registrados", len(hist))
-        m2.metric("Resolvidos", len(fechados))
-        m3.metric("Acertos", g)
-        m4.metric("Taxa da sessão", f"{taxa:.1f}%" if fechados else "—")
+        # Cartões próprios em vez de st.metric: o componente padrão do Streamlit
+        # tem outra tipografia e destoa do resto da interface.
         if fechados:
             p, lo, hi = wilson_ci(g, len(fechados))
             v = verdict(g, len(fechados), PAYOUT)
             txt = {"acima": "acima do breakeven", "abaixo": "abaixo do breakeven",
                    "inconclusivo": "não conclusivo", "sem dados": "sem dados"}[v]
-            st.caption(f"IC95 {lo*100:.0f}–{hi*100:.0f}% · **{txt}** "
-                       f"(breakeven {BE:.2f}% com payout {payout_lbl}) · "
-                       f"{emp} empate(s) devolvido(s) · {abertos} aguardando fechar")
+            tcls = {"acima": "good", "abaixo": "bad"}.get(v, "mid")
+            taxa_txt = f'{taxa:.1f}%'
+            sub = f'IC95 {lo*100:.0f}–{hi*100:.0f}% · {txt}'
+        else:
+            tcls, taxa_txt, sub = "mid", "—", "nenhuma operação resolvida ainda"
+
+        def stat(rot, val, extra="", cls=""):
+            return (f'<div class="stat"><span class="k">{rot}</span>'
+                    f'<span class="v {cls}">{val}</span>'
+                    f'<span class="x">{extra}</span></div>')
+
+        st.markdown(
+            '<div class="statrow">'
+            + stat("Sinais registrados", len(hist), f"{abertos} aguardando fechar")
+            + stat("Resolvidos", len(fechados), f"{emp} empate(s) devolvido(s)")
+            + stat("Acertos", g, f"de {len(fechados)} operações")
+            + stat("Taxa do forward test", taxa_txt, sub, tcls)
+            + '</div>', unsafe_allow_html=True)
+        st.caption(f"Breakeven {BE:.2f}% com payout {payout_lbl}.")
 
         VTXT = {"acima": ('v-good', 'acima do breakeven'),
                 "abaixo": ('v-bad', 'abaixo do breakeven'),
