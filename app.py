@@ -21,7 +21,7 @@ import streamlit.components.v1 as components
 from streamlit_autorefresh import st_autorefresh
 
 from strategies import (STRATEGIES, add_indicators, score_of, classify,
-                        backtest, MIN_SCORE)
+                        backtest, MIN_SCORE, wilson_ci, breakeven, verdict)
 
 socket.setdefaulttimeout(8)
 st.set_page_config(page_title="Sinais IA · Estratégias", page_icon="⚡", layout="wide")
@@ -179,7 +179,13 @@ st.markdown("""
 .perf .n{color:#8496bd;font-size:.76rem}
 .badge{font-size:.58rem;font-weight:800;letter-spacing:1.4px;padding:3px 9px;border-radius:999px;
  background:rgba(0,245,176,.16);color:#7ef7d6;border:1px solid rgba(0,245,176,.35);margin-left:8px}
+.badge.neutral{background:rgba(255,255,255,.06);color:#a9b7d8;border-color:rgba(255,255,255,.18)}
 .warn{font-size:.68rem;color:#e8c07a;margin-left:8px}
+.ci{font-family:'JetBrains Mono',monospace;font-size:.7rem;color:#7f8fb3;margin-left:4px}
+.verd{font-size:.6rem;font-weight:800;letter-spacing:1px;padding:2px 8px;border-radius:999px;margin-left:6px}
+.v-good{background:rgba(0,245,176,.14);color:#7ef7d6;border:1px solid rgba(0,245,176,.32)}
+.v-bad{background:rgba(255,59,107,.12);color:#ff8fa6;border:1px solid rgba(255,59,107,.30)}
+.v-mid{background:rgba(232,192,122,.12);color:#e8c07a;border:1px solid rgba(232,192,122,.30)}
 .rule{margin-top:18px;font-size:.73rem;color:#8697bd;background:rgba(255,255,255,.03);
  border:1px solid rgba(255,255,255,.07);border-radius:12px;padding:10px 15px;line-height:1.5}
 .rule b{color:#b9c6e8}
@@ -194,7 +200,11 @@ div[role="radiogroup"] label{background:rgba(255,255,255,.04);border:1px solid r
 with st.sidebar:
     st.markdown("#### ⚡ Sinais IA")
     show_closed = st.toggle("Incluir pares fora de sessão", value=False)
-    st.caption("Escolha a estratégia e o timeframe. O painel de desempenho mede as 4.")
+    payout_lbl = st.radio("Payout", ["80%", "90%"], index=0, horizontal=True)
+    PAYOUT = 0.80 if payout_lbl == "80%" else 0.90
+    BE = breakeven(PAYOUT) * 100
+    st.caption(f"Breakeven com payout {payout_lbl}: **{BE:.2f}%**. "
+               "O painel só afirma vantagem se todo o intervalo ficar acima disso.")
 
 st.markdown('<div class="brand"><span class="logo">⚡</span><span class="name">Sinais IA</span>'
             '<span class="live">MULTI-ESTRATÉGIA</span></div>', unsafe_allow_html=True)
@@ -335,26 +345,43 @@ else:
                 unsafe_allow_html=True)
 
 # ---------------- painel de desempenho ----------------
+VERD_STYLE = {
+    "acima": ("v-good", "acima do breakeven"),
+    "abaixo": ("v-bad", "abaixo do breakeven"),
+    "inconclusivo": ("v-mid", "não conclusivo"),
+    "sem dados": ("v-mid", "sem dados"),
+}
+
+
 def wr_cell(n, w):
+    """Taxa + intervalo de confiança 95% (Wilson) + veredito contra o breakeven."""
     if n == 0:
         return '<span class="wr mid">—</span><br><span class="n">0 ops</span>'
-    r = w / n * 100
-    cls = "good" if r >= 55 else ("mid" if r >= 50 else "bad")
-    warn = '<span class="warn">amostra pequena</span>' if n < 30 else ""
-    return f'<span class="wr {cls}">{r:.1f}%</span>{warn}<br><span class="n">{n} ops</span>'
+    p, lo, hi = wilson_ci(w, n)
+    v = verdict(w, n, PAYOUT)
+    vcls, vtxt = VERD_STYLE[v]
+    cls = "good" if v == "acima" else ("bad" if v == "abaixo" else "mid")
+    return (f'<span class="wr {cls}">{p*100:.1f}%</span> '
+            f'<span class="ci">IC95 {lo*100:.0f}–{hi*100:.0f}%</span><br>'
+            f'<span class="n">{n} ops</span> <span class="verd {vcls}">{vtxt}</span>')
 
 
 ranked = sorted(STRATEGIES, key=lambda k: (perf[k]["per"][1] / perf[k]["per"][0]) if perf[k]["per"][0] else 0,
                 reverse=True)
-best = ranked[0] if perf[ranked[0]]["per"][0] >= 30 else None
+top = ranked[0] if perf[ranked[0]]["per"][0] else None
+# só destaca se houver vantagem estatística de verdade
+top_proven = bool(top) and verdict(perf[top]["per"][1], perf[top]["per"][0], PAYOUT) == "acima"
 
 rows = ""
 for name in STRATEGIES:
     p = perf[name]
-    is_best = (name == best)
-    badge = '<span class="badge">MELHOR NO PERÍODO</span>' if is_best else ""
+    is_top = (name == top)
+    badge = ""
+    if is_top:
+        badge = ('<span class="badge">VANTAGEM COMPROVADA</span>' if top_proven
+                 else '<span class="badge neutral">MAIOR TAXA · não comprovada</span>')
     sel = ' · <span class="n">em uso</span>' if name == strat_name else ""
-    rows += (f'<tr class="{"best" if is_best else ""}">'
+    rows += (f'<tr class="{"best" if (is_top and top_proven) else ""}">'
              f'<td class="nm">{name}{badge}{sel}</td>'
              f'<td>{wr_cell(*p["hoje"])}</td>'
              f'<td>{wr_cell(*p["per"])}</td></tr>')
@@ -365,11 +392,14 @@ st.markdown(f'<div class="gtitle">Desempenho das estratégias · {TF_LABEL[TF]} 
 st.markdown(f'<table class="perf"><tr><th>ESTRATÉGIA</th><th>HOJE</th>'
             f'<th>PERÍODO ({TF_PERIOD[interval]})</th></tr>{rows}</table>', unsafe_allow_html=True)
 
-st.markdown('<div class="rule"><b>Como ler:</b> a taxa é medida operando toda vez que a estratégia '
-            'dispara, entrando na <b>abertura da vela seguinte</b>. <b>Acerto:</b> COMPRA vence se a vela '
-            'fechar <b style="color:#00f5b0">verde</b> (fecha acima da abertura); VENDA vence se fechar '
-            '<b style="color:#ff3b6b">vermelha</b>. Com menos de ~30 operações a diferença entre '
-            'estratégias é quase toda acaso — olhe a coluna do período, não só a de hoje.</div>',
+st.markdown(f'<div class="rule"><b>Como ler:</b> a taxa é medida operando toda vez que a estratégia '
+            f'dispara, entrando na <b>abertura da vela seguinte</b>. <b>Acerto:</b> COMPRA vence se a vela '
+            f'fechar <b style="color:#00f5b0">verde</b>; VENDA vence se fechar '
+            f'<b style="color:#ff3b6b">vermelha</b>.<br>'
+            f'<b>IC95</b> é a faixa em que a taxa real provavelmente está. Com o payout de {payout_lbl}, '
+            f'o breakeven é <b>{BE:.2f}%</b> — só existe vantagem se <b>toda</b> a faixa ficar acima disso. '
+            f'Quando a faixa cruza o breakeven o resultado é <b>não conclusivo</b>: a diferença entre as '
+            f'estratégias ainda pode ser acaso, e escolher pela maior taxa é perseguir ruído.</div>',
             unsafe_allow_html=True)
 
 st.markdown('<div class="footline">Uso próprio · não é recomendação financeira</div>', unsafe_allow_html=True)

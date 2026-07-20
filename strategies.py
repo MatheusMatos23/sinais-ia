@@ -16,6 +16,8 @@ Empate (close == open) conta como derrota e é reportado à parte.
 """
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pandas as pd
 
@@ -174,3 +176,41 @@ def backtest_all(d: pd.DataFrame, tf: str) -> dict:
     """Roda todas as estratégias no mesmo DataFrame."""
     d = add_indicators(d)
     return {name: backtest(d, score_of(name, d, tf)) for name in STRATEGIES}
+
+
+# ----------------------------------------------------------------------
+# Estatística: intervalo de confiança e veredito contra o breakeven
+# ----------------------------------------------------------------------
+def wilson_ci(wins: int, trades: int, z: float = 1.96):
+    """
+    Intervalo de Wilson 95% (mais correto que a normal em amostras pequenas).
+    Retorna (taxa, limite_inferior, limite_superior) em fração 0..1.
+    """
+    if not trades:
+        return (float("nan"), float("nan"), float("nan"))
+    p = wins / trades
+    d = 1 + z * z / trades
+    center = (p + z * z / (2 * trades)) / d
+    half = z * math.sqrt(p * (1 - p) / trades + z * z / (4 * trades * trades)) / d
+    return (p, max(0.0, center - half), min(1.0, center + half))
+
+
+def breakeven(payout: float) -> float:
+    """Win rate necessária para empatar. payout 0.80 -> 0.5556."""
+    return 1.0 / (1.0 + payout)
+
+
+def verdict(wins: int, trades: int, payout: float) -> str:
+    """
+    'acima' | 'abaixo' | 'inconclusivo' | 'sem dados'
+    Só afirma vantagem se TODO o intervalo estiver acima do breakeven.
+    """
+    if not trades:
+        return "sem dados"
+    be = breakeven(payout)
+    _, lo, hi = wilson_ci(wins, trades)
+    if lo > be:
+        return "acima"
+    if hi < be:
+        return "abaixo"
+    return "inconclusivo"
