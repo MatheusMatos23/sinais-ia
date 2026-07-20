@@ -713,7 +713,6 @@ div[data-testid="stMetricValue"]{font-family:'IBM Plex Mono',monospace;font-size
    vizinhas não são empurradas para o meio da altura */
 [data-testid="stHorizontalBlock"]:has(.lbl) [data-testid="stSelectSlider"]{padding-top:10px}
 .stMultiSelect [data-baseweb="select"]>div{flex-wrap:wrap}
-div[data-testid="stExpander"]{margin-bottom:4px}
 @media(max-width:900px){.hero{grid-template-columns:1fr}.hero-side{border-left:0;border-top:1px solid var(--line)}}
 
 /* ---------- ACABAMENTO ---------- */
@@ -750,6 +749,42 @@ div[data-testid="stExpander"] summary:hover{color:var(--ink)}
 /* Rodapé discreto. */
 .foot{margin:38px 0 8px;text-align:center;font-size:.66rem;color:var(--mut);
   border-top:1px solid var(--line);padding-top:16px}
+
+/* Estado vazio do scanner: compacto, é o estado mais comum do app. */
+.empty{display:flex;align-items:center;gap:18px;background:var(--surf);
+  border:1px solid var(--line);border-radius:var(--r2);padding:18px 22px}
+.empty .e-ico{width:42px;height:42px;flex:none;border-radius:12px;display:flex;
+  align-items:center;justify-content:center;background:var(--surf2);
+  border:1px solid var(--line);color:var(--mut)}
+.empty .e-ico svg{width:20px;height:20px}
+.empty .e-txt{display:flex;flex-direction:column;gap:4px;min-width:0}
+.empty .e-txt b{font-size:.95rem;font-weight:600;color:var(--ink2)}
+.empty .e-txt span{font-size:.72rem;color:var(--mut);line-height:1.55}
+.empty .e-side{margin-left:auto;text-align:right;display:flex;flex-direction:column;gap:3px;flex:none}
+.empty .e-side .k{font-size:.56rem;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--mut);font-weight:600}
+.empty .e-side .v{font-size:1.15rem;font-weight:600;color:var(--ink)}
+
+/* ---------- RITMO VERTICAL ----------
+   Havia vãos de 40-60px entre blocos que não separavam nada: o cartão de
+   controles, o expander e o contador são um grupo só. */
+div[data-testid="stExpander"]{margin:2px 0 6px}
+[data-testid="stTabs"]{margin-top:10px}
+.block-container{padding-top:1.1rem}
+[data-testid="stCaptionContainer"] p{font-size:.72rem!important;color:var(--mut)!important}
+@media(max-width:820px){
+  .empty{flex-wrap:wrap}.empty .e-side{margin-left:0}
+  .sumbar .s-side{gap:16px}
+  .statrow{grid-template-columns:repeat(2,1fr)}
+}
+
+/* Resultado no Histórico: bolinha colorida antes do texto, para varrer a coluna
+   de relance sem ler palavra por palavra. */
+.verd::before{content:"";display:inline-block;width:5px;height:5px;border-radius:50%;
+  margin-right:5px;vertical-align:1px;background:currentColor}
+.tbl td .sc{background:var(--surf2);border:1px solid var(--line)}
+/* colunas numéricas alinhadas pela direita deixam a leitura vertical mais limpa */
+.tbl td.mono,.tbl td.n.mono{text-align:right;font-variant-numeric:tabular-nums}
 </style>
 """, unsafe_allow_html=True)
 
@@ -1375,22 +1410,23 @@ with tab_sig:
         else:
             st.caption("Esta é a única entrada no momento.")
     else:
-        st.markdown(f"""<div class="hero wait">
-          <div class="hero-main">
-            <div class="h-tag">Scanner</div>
-            <div class="h-pair">Mercado</div>
-            <div class="h-dir">Nenhuma entrada</div>
-            <div class="fb"><span class="lbl2" style="margin-left:0">Aguardando setup</span></div>
+        # Estado vazio compacto. Antes era um cartão da mesma altura do sinal
+        # real, com muito espaço morto — e "nenhuma entrada" é o estado mais
+        # frequente do app, então não faz sentido ele ocupar a tela inteira.
+        st.markdown(f"""<div class="empty">
+          <div class="e-ico">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
+                 stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4.2-4.2"/></svg>
           </div>
-          <div class="hero-side">
-            <div class="h-row"><span class="h-k">Próxima vela</span>
-              <span class="h-v mono">{cvela}</span></div>
-            <div class="h-row"><span class="h-k">Estratégias ativas</span>
-              <span class="h-v">{len(sel_strats)}</span></div>
-            <div class="h-row"><span class="h-k">Ativos varridos</span>
-              <span class="h-v">{len(scan_list)}</span></div>
+          <div class="e-txt">
+            <b>Nenhuma entrada agora</b>
+            <span>Varrendo {len(scan_list)} ativos com {len(sel_strats)} estratégia(s).
+            Ficar sem entrada na maior parte das velas é o comportamento esperado —
+            filtro que dispara sempre não está filtrando nada.</span>
+          </div>
+          <div class="e-side">
+            <span class="k">Próxima vela</span><span class="v mono">{cvela}</span>
           </div></div>""", unsafe_allow_html=True)
-        st.caption("Nenhum ativo atende aos critérios agora. Ter poucas ou nenhuma entrada é o normal.")
 
     if audio_on:
         if entries:
