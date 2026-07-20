@@ -980,6 +980,121 @@ div[data-testid="stExpander"]{margin:2px 0 var(--gap-curto)}
 auto_on = st.query_params.get("live", "1") != "0"
 foco = st.query_params.get("foco", "0") == "1"
 
+# --- Persistência remota (opcional) ---------------------------------------
+# O disco do Streamlit Cloud é EFÊMERO: todo rebuild do app zera o container e
+# leva o hist_signals.json junto. Sem isso, o forward test nunca acumula amostra
+# suficiente para dar veredito conclusivo. Com um token nos secrets, o histórico
+# é espelhado num Gist privado e sobrevive aos reinícios.
+GIST_FILE = "sinais_historico.json"      # histórico
+GIST_CFG = "kairo_config.json"           # preferências
+
+
+def _gh():
+    """(token, gist_id) dos secrets, ou (None, None). O token nunca vai pro código."""
+    def s(k):
+        try:
+            v = st.secrets.get(k, "")
+        except Exception:
+            v = ""
+        return v or os.environ.get(k, "")
+    return s("GITHUB_TOKEN") or None, s("GIST_ID") or None
+
+
+def gist_load(arquivo=GIST_FILE):
+    tok, gid = _gh()
+    if not (tok and gid):
+        return None
+    import requests
+    try:
+        r = requests.get(f"https://api.github.com/gists/{gid}", timeout=4,
+                         headers={"Authorization": f"Bearer {tok}",
+                                  "Accept": "application/vnd.github+json"})
+        if r.status_code != 200:
+            st.session_state["gist_erro"] = f"HTTP {r.status_code} ao ler o Gist"
+            return None
+        c = r.json().get("files", {}).get(arquivo, {}).get("content")
+        return json.loads(c) if c else []
+    except Exception as e:
+        st.session_state["gist_erro"] = str(e)[:90]
+        return None
+
+
+_gist_err = [""]          # último erro de gravação (fora do session_state: roda em thread)
+
+
+def gist_save(out, arquivo=GIST_FILE):
+    """Grava em background — a virada da vela não pode esperar rede."""
+    tok, gid = _gh()
+    if not (tok and gid):
+        return False
+
+    def _w():
+        import requests
+        try:
+            r = requests.patch(
+                f"https://api.github.com/gists/{gid}", timeout=8,
+                headers={"Authorization": f"Bearer {tok}",
+                         "Accept": "application/vnd.github+json"},
+                json={"files": {arquivo: {"content": json.dumps(out, ensure_ascii=False)}}})
+            _gist_err[0] = "" if r.status_code == 200 else f"HTTP {r.status_code} ao gravar"
+        except Exception as e:
+            _gist_err[0] = str(e)[:90]
+
+    threading.Thread(target=_w, daemon=True).start()
+    return True
+
+
+HIST_REMOTO = all(_gh())
+
+
+# ---------- preferências do usuário ----------
+# Mesmo caminho do histórico: arquivo no disco (sobrevive a recarregar a página)
+# espelhado no Gist quando configurado (sobrevive ao rebuild do container).
+# Precisa ser carregado AQUI, antes dos widgets, porque cada um usa o valor
+# salvo como padrão.
+CFG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "kairo_config.json")
+CFG_PADRAO = {
+    "tf": "5", "estrategias": None, "forca": "FRACA", "mercado": "Tudo",
+    "payout": "80%", "intervalo": 15, "so_confluencia": False,
+    "fora_sessao": False, "audio": False, "sistema": True,
+    "usar_janela": False, "janela": [9, 17],
+}
+
+
+def cfg_load():
+    if "cfg" in st.session_state:
+        return st.session_state["cfg"]
+    cfg = dict(CFG_PADRAO)
+    remoto = gist_load(GIST_CFG)
+    if isinstance(remoto, dict):
+        cfg.update({k: v for k, v in remoto.items() if k in CFG_PADRAO})
+    else:
+        try:
+            if os.path.exists(CFG_PATH):
+                with open(CFG_PATH, "r", encoding="utf-8") as f:
+                    cfg.update({k: v for k, v in json.load(f).items() if k in CFG_PADRAO})
+        except Exception:
+            pass
+    st.session_state["cfg"] = cfg
+    return cfg
+
+
+def cfg_save(cfg):
+    """Só grava quando algo mudou — senão escreveria em disco a cada rerun."""
+    if st.session_state.get("cfg_salvo") == cfg:
+        return
+    st.session_state["cfg_salvo"] = dict(cfg)
+    st.session_state["cfg"] = dict(cfg)
+    try:
+        with open(CFG_PATH, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False)
+    except Exception:
+        pass
+    gist_save(cfg, GIST_CFG)
+
+
+CFG = cfg_load()
+
 topbar_slot = st.empty()          # a barra de status é preenchida depois (precisa dos dados)
 st.markdown('<div class="ctrlbar">', unsafe_allow_html=True)
 # Três colunas. A chave "Ao vivo" saiu daqui: ela é um link no cabeçalho, HTML
@@ -991,12 +1106,16 @@ st.markdown('<div class="ctrlbar">', unsafe_allow_html=True)
 cc1, cc2, cc3 = st.columns([1.35, 2.35, 1.15], vertical_alignment="top")
 with cc1:
     st.markdown('<div class="lbl">Timeframe</div>', unsafe_allow_html=True)
-    tf_label = st.radio("tf", ["1 min", "5 min", "15 min"], index=1, horizontal=True,
+    _tfs = ["1 min", "5 min", "15 min"]
+    _tf_ini = _tfs.index(f'{CFG["tf"]} min') if f'{CFG["tf"]} min' in _tfs else 1
+    tf_label = st.radio("tf", _tfs, index=_tf_ini, horizontal=True,
                         label_visibility="collapsed")
     TF = {"1 min": "1", "5 min": "5", "15 min": "15"}[tf_label]
 with cc2:
     st.markdown('<div class="lbl">Estratégias ativas</div>', unsafe_allow_html=True)
-    default_sel = [k for k in ("G · Fade vela extrema", "J · Z-score forte", "K · Reversão dupla")
+    default_sel = [k for k in (CFG.get("estrategias")
+                              or ("G · Fade vela extrema", "J · Z-score forte",
+                                  "K · Reversão dupla"))
                    if k in STRATEGIES]
     sel_strats = st.multiselect("est", list(STRATEGIES), default=default_sel,
                                 format_func=lambda s: CHIP.get(s, s),
@@ -1033,7 +1152,8 @@ with cc2:
         </style>""", unsafe_allow_html=True)
 with cc3:
     st.markdown('<div class="lbl">Força mínima</div>', unsafe_allow_html=True)
-    min_force = st.select_slider("fm", options=["FRACA", "MÉDIA", "FORTE"], value="FRACA",
+    min_force = st.select_slider("fm", options=["FRACA", "MÉDIA", "FORTE"],
+                                 value=CFG.get("forca", "FRACA"),
                                  label_visibility="collapsed")
 st.markdown('</div>', unsafe_allow_html=True)
 
@@ -1050,24 +1170,31 @@ with tab_cfg:
         # Chave mestra: desligado, o scanner não emite nem registra nada. Serve
         # para horários em que você já sabe que não vale operar — e evita sujar
         # o forward test com sinais que você nunca executaria.
-        sistema_on = st.toggle("Sistema ativo", value=True,
+        sistema_on = st.toggle("Sistema ativo", value=CFG.get("sistema", True),
                                help="Desligado, nenhuma entrada é gerada ou gravada "
                                     "no histórico.")
-        usar_janela = st.toggle("Operar só em uma faixa de horário", value=False)
-        jan_ini, jan_fim = st.slider("Faixa (horário de Brasília)", 0, 23, (9, 17),
+        usar_janela = st.toggle("Operar só em uma faixa de horário",
+                                value=CFG.get("usar_janela", False))
+        jan_ini, jan_fim = st.slider("Faixa (horário de Brasília)", 0, 23,
+                                     tuple(CFG.get("janela", [9, 17])),
                                      disabled=not usar_janela,
                                      format="%dh")
         st.markdown("**Mercados**")
-        mercado = st.radio("Onde operar", ["Tudo", "Só forex", "Só cripto"],
-                           index=0, horizontal=False, label_visibility="collapsed",
+        _mkts = ["Tudo", "Só forex", "Só cripto"]
+        mercado = st.radio("Onde operar", _mkts,
+                           index=_mkts.index(CFG.get("mercado", "Tudo"))
+                           if CFG.get("mercado") in _mkts else 0,
+                           horizontal=False, label_visibility="collapsed",
                            help="Cripto opera 24/7; forex fecha no fim de semana e "
                                 "fora das sessões.")
         st.markdown("**Filtros**")
-        only_conf = st.toggle("Só entradas com 2+ estratégias", value=False)
-        show_closed = st.toggle("Incluir pares fora de sessão", value=False)
+        only_conf = st.toggle("Só entradas com 2+ estratégias",
+                              value=CFG.get("so_confluencia", False))
+        show_closed = st.toggle("Incluir pares fora de sessão",
+                                value=CFG.get("fora_sessao", False))
     with o2:
         st.markdown("**Áudio**")
-        audio_on = st.toggle("🔊 Aviso por voz na entrada", value=False)
+        audio_on = st.toggle("🔊 Aviso por voz na entrada", value=CFG.get("audio", False))
         st.caption("O navegador só toca som depois de um clique seu. Libere aqui:")
         html_box("""
         <div style="font-family:Inter,sans-serif">
@@ -1089,10 +1216,12 @@ with tab_cfg:
         </script>""", height=88)
     with o3:
         st.markdown("**Análise e atualização**")
-        payout_lbl = st.radio("Payout padrão da corretora", ["80%", "90%"], index=0,
+        payout_lbl = st.radio("Payout padrão da corretora", ["80%", "90%"],
+                              index=0 if CFG.get("payout", "80%") == "80%" else 1,
                               horizontal=True)
         st.caption("A pastilha *Ao vivo / Pausado* fica no cabeçalho, à direita.")
-        every = st.slider("Intervalo (s)", 10, 60, 15, step=5, disabled=not auto_on)
+        every = st.slider("Intervalo (s)", 10, 60, int(CFG.get("intervalo", 15)),
+                          step=5, disabled=not auto_on)
     st.markdown("**Payout por ativo** — o breakeven muda com o payout, então vale "
                 "conferir o de cada par na sua corretora. Em branco = usa o padrão.")
     pc1, pc2 = st.columns(2)
@@ -1115,6 +1244,16 @@ with tab_cfg:
     st.markdown(f'<table class="tbl" style="max-width:420px">'
                 f'<tr><th>Sessão</th><th>Janela (BRT)</th></tr>{linhas}</table>',
                 unsafe_allow_html=True)
+# Salva as preferências depois que todos os widgets existem. cfg_save só grava
+# quando algo mudou de fato, então isso não escreve em disco a cada rerun.
+cfg_save({
+    "tf": TF, "estrategias": list(sel_strats), "forca": min_force,
+    "mercado": mercado, "payout": payout_lbl, "intervalo": int(every),
+    "so_confluencia": bool(only_conf), "fora_sessao": bool(show_closed),
+    "audio": bool(audio_on), "sistema": bool(sistema_on),
+    "usar_janela": bool(usar_janela), "janela": [int(jan_ini), int(jan_fim)],
+})
+
 PAYOUT = 0.80 if payout_lbl == "80%" else 0.90
 BE = breakeven(PAYOUT) * 100
 PAY_OVR = _pay_ovr
@@ -1423,70 +1562,6 @@ def _short(nm):
 HIST_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hist_signals.json")
 
 
-# --- Persistência remota (opcional) ---------------------------------------
-# O disco do Streamlit Cloud é EFÊMERO: todo rebuild do app zera o container e
-# leva o hist_signals.json junto. Sem isso, o forward test nunca acumula amostra
-# suficiente para dar veredito conclusivo. Com um token nos secrets, o histórico
-# é espelhado num Gist privado e sobrevive aos reinícios.
-GIST_FILE = "sinais_historico.json"
-
-
-def _gh():
-    """(token, gist_id) dos secrets, ou (None, None). O token nunca vai pro código."""
-    def s(k):
-        try:
-            v = st.secrets.get(k, "")
-        except Exception:
-            v = ""
-        return v or os.environ.get(k, "")
-    return s("GITHUB_TOKEN") or None, s("GIST_ID") or None
-
-
-def gist_load():
-    tok, gid = _gh()
-    if not (tok and gid):
-        return None
-    import requests
-    try:
-        r = requests.get(f"https://api.github.com/gists/{gid}", timeout=4,
-                         headers={"Authorization": f"Bearer {tok}",
-                                  "Accept": "application/vnd.github+json"})
-        if r.status_code != 200:
-            st.session_state["gist_erro"] = f"HTTP {r.status_code} ao ler o Gist"
-            return None
-        c = r.json().get("files", {}).get(GIST_FILE, {}).get("content")
-        return json.loads(c) if c else []
-    except Exception as e:
-        st.session_state["gist_erro"] = str(e)[:90]
-        return None
-
-
-_gist_err = [""]          # último erro de gravação (fora do session_state: roda em thread)
-
-
-def gist_save(out):
-    """Grava em background — a virada da vela não pode esperar rede."""
-    tok, gid = _gh()
-    if not (tok and gid):
-        return False
-
-    def _w():
-        import requests
-        try:
-            r = requests.patch(
-                f"https://api.github.com/gists/{gid}", timeout=8,
-                headers={"Authorization": f"Bearer {tok}",
-                         "Accept": "application/vnd.github+json"},
-                json={"files": {GIST_FILE: {"content": json.dumps(out, ensure_ascii=False)}}})
-            _gist_err[0] = "" if r.status_code == 200 else f"HTTP {r.status_code} ao gravar"
-        except Exception as e:
-            _gist_err[0] = str(e)[:90]
-
-    threading.Thread(target=_w, daemon=True).start()
-    return True
-
-
-HIST_REMOTO = all(_gh())
 
 
 def hist_load():
