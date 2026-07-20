@@ -30,12 +30,13 @@ try:
 except Exception:                                   # fallback: UTC-3 fixo
     BR_TZ = timezone(timedelta(hours=-3))
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 from streamlit_autorefresh import st_autorefresh
 
-from strategies import (STRATEGIES, add_indicators, score_of, classify,
+from strategies import (STRATEGIES, MIN_SCORE, add_indicators, score_of, classify,
                         backtest, wilson_ci, breakeven, verdict)
 
 # st.components.v1.html está depreciado e já passou da data de remoção
@@ -817,6 +818,50 @@ div[data-testid="stExpander"] summary:hover{color:var(--ink)}
 [data-testid="stHorizontalBlock"]{transition:none!important}
 [data-stale="true"]{opacity:1!important;transition:none!important;filter:none!important}
 
+/* ---------- TABELAS COM ACABAMENTO DE PRODUTO ----------
+   Antes eram linhas soltas sobre o fundo da página. Agora cada tabela é um
+   cartão: borda, cantos arredondados, cabeçalho com fundo próprio e zebra. */
+.tbl{background:var(--surf);border:1px solid var(--line);border-radius:var(--r2);
+  overflow:hidden;box-shadow:0 1px 0 rgba(255,255,255,.02) inset}
+.tbl th{background:var(--surf2);border-bottom:1px solid var(--line2);
+  padding:11px 16px;color:var(--mut)}
+.tbl td{padding:14px 16px;border-bottom:1px solid var(--line)}
+.tbl tr:last-child td{border-bottom:0}
+.tbl tbody tr:nth-child(even) td,.tbl tr:nth-child(even) td{background:rgba(255,255,255,.012)}
+.tbl tr.on td{background:rgba(0,200,138,.05);box-shadow:inset 2px 0 0 var(--buy)}
+.tbl tr:hover td{background:rgba(255,255,255,.035)}
+.tbl tr.on:hover td{background:rgba(0,200,138,.08)}
+/* posição na primeira coluna, como ranking */
+.tbl .nm{position:relative}
+.rankn{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;
+  border-radius:6px;background:var(--surf2);border:1px solid var(--line);
+  font-family:'IBM Plex Mono',monospace;font-size:.62rem;font-weight:700;
+  color:var(--mut);margin-right:10px;vertical-align:1px}
+.rankn.top{background:var(--buy-dim);border-color:rgba(0,200,138,.3);color:var(--buy)}
+
+/* ---------- GRÁFICO DE HORAS ---------- */
+.horas{position:relative;display:flex;align-items:flex-end;gap:3px;height:120px;
+  background:var(--surf);border:1px solid var(--line);border-radius:var(--r2);
+  padding:14px 16px 8px;margin-bottom:var(--gap-curto)}
+.horas .hcol{flex:1;display:flex;flex-direction:column;justify-content:flex-end;
+  align-items:center;height:100%;gap:6px}
+.horas .hcol i{width:100%;border-radius:4px 4px 0 0;display:block;min-height:4px;
+  transition:filter .15s}
+.horas .hcol:hover i{filter:brightness(1.35)}
+.horas .hcol i.bom{background:linear-gradient(180deg,var(--buy),rgba(0,200,138,.35))}
+.horas .hcol i.neutro{background:rgba(255,255,255,.14)}
+.horas .hcol i.ruim{background:linear-gradient(180deg,rgba(255,74,99,.55),rgba(255,74,99,.2))}
+.horas .hcol i.vazio{background:repeating-linear-gradient(45deg,
+  rgba(255,255,255,.05) 0 3px,transparent 3px 6px);height:8px}
+.horas .hh{font-family:'IBM Plex Mono',monospace;font-size:.56rem;color:var(--mut)}
+.horas .h-linha.be{position:absolute;left:16px;right:16px;top:52%;
+  border-top:1px dashed var(--warn);opacity:.55}
+
+/* estado pausado do scanner */
+.empty.pausado{border-left:3px solid var(--warn)}
+.empty.pausado .e-ico{color:var(--warn);border-color:rgba(217,164,65,.3);
+  background:rgba(217,164,65,.08)}
+
 /* Separador de dia no histórico, com o subtotal na própria linha. */
 .tbl tr.daysep td{background:rgba(255,255,255,.03);border-bottom:1px solid var(--line2);
   padding:9px 14px}
@@ -1001,6 +1046,17 @@ tab_sig, tab_perf, tab_hist, tab_cfg = st.tabs(
 with tab_cfg:
     o1, o2, o3 = st.columns(3)
     with o1:
+        st.markdown("**Operação**")
+        # Chave mestra: desligado, o scanner não emite nem registra nada. Serve
+        # para horários em que você já sabe que não vale operar — e evita sujar
+        # o forward test com sinais que você nunca executaria.
+        sistema_on = st.toggle("Sistema ativo", value=True,
+                               help="Desligado, nenhuma entrada é gerada ou gravada "
+                                    "no histórico.")
+        usar_janela = st.toggle("Operar só em uma faixa de horário", value=False)
+        jan_ini, jan_fim = st.slider("Faixa (horário de Brasília)", 0, 23, (9, 17),
+                                     disabled=not usar_janela,
+                                     format="%dh")
         st.markdown("**Filtros**")
         only_conf = st.toggle("Só entradas com 2+ estratégias", value=False)
         show_closed = st.toggle("Incluir pares fora de sessão", value=False)
@@ -1158,7 +1214,18 @@ for a in scan_list:
         if FORCE_ORDER[r[1]] > FORCE_ORDER[e["force"]]:
             e["force"] = r[1]
 
-entries = list(agg.values())
+# Chave mestra e janela de horário. Fora do horário permitido o app continua
+# mostrando dados e diagnóstico, mas NÃO emite entrada — e, como record_and_resolve
+# só grava o que está em `entries`, o histórico também não é contaminado.
+_h_br = br(now).hour
+if usar_janela:
+    dentro_janela = (jan_ini <= _h_br <= jan_fim) if jan_ini <= jan_fim \
+        else (_h_br >= jan_ini or _h_br <= jan_fim)
+else:
+    dentro_janela = True
+operando = sistema_on and dentro_janela
+
+entries = list(agg.values()) if operando else []
 minf = {"FRACA": 1, "MÉDIA": 2, "FORTE": 3}[min_force]
 entries = [e for e in entries if FORCE_ORDER[e["force"]] >= minf]
 if only_conf:
@@ -1167,6 +1234,29 @@ entries.sort(key=lambda e: (len(e["strats"]), FORCE_ORDER[e["force"]], e["score"
 
 
 # ============================== DESEMPENHO ==============================
+def horas_backtest(d, score, hb, acc):
+    """
+    Mesma regra do backtest() — entrada na abertura da vela seguinte, acerto pela
+    cor, empate devolvido —, mas agregando por hora de uma vez.
+
+    Fazia isso com 24 chamadas a backtest() sobre fatias mascaradas, e o painel
+    passou a custar o dobro (medido: 0,93s -> 1,97s). Dois groupby resolvem.
+    """
+    o_next = d["Open"].shift(-1)
+    c_next = d["Close"].shift(-1)
+    sig = score.where(score.abs() >= MIN_SCORE, 0.0)
+    valid = (sig != 0) & o_next.notna() & c_next.notna()
+    tie = c_next == o_next
+    win = pd.Series(np.where(sig > 0, c_next > o_next, c_next < o_next), index=d.index)
+    ok = valid & ~tie                       # empate sai do denominador
+    if not bool(ok.any()):
+        return
+    for h_, v in ok.groupby(hb).sum().items():
+        acc[int(h_)][0] += int(v)
+    for h_, v in (ok & win).groupby(hb).sum().items():
+        acc[int(h_)][1] += int(v)
+
+
 def run_perf():
     """
     Backtest de todas as estratégias.
@@ -1179,6 +1269,7 @@ def run_perf():
     today = now.date()
     dhist = get_data_hist(scan_list, interval)      # janela grande, cache de 10 min
     out = {n: {"hoje": [0, 0], "per": [0, 0]} for n in STRATEGIES}
+    horas = {h: [0, 0] for h in range(24)}          # hora BRT -> [ops, acertos]
     for a in scan_list:
         df = dhist.get(a["name"])
         if df is None or len(df) < 80:
@@ -1187,6 +1278,8 @@ def run_perf():
         m = d.index.date == today                   # máscara do dia, idem
         tem_hoje = m.any()
         d_hoje = d[m] if tem_hoje else None
+        # Hora de Brasília de cada vela: o índice está em UTC.
+        hb = (d.index.hour - 3) % 24
         for name in STRATEGIES:
             sc = score_of(name, d, interval)
             r = backtest(d, sc)
@@ -1195,7 +1288,11 @@ def run_perf():
             if tem_hoje:
                 rd = backtest(d_hoje, sc[m])
                 acc["hoje"][0] += rd["trades"]; acc["hoje"][1] += rd["wins"]
-    return out
+            # Recorte por hora só das estratégias em uso: perguntar "que horas
+            # operar" sobre estratégias que você não usa não responde nada.
+            if name in sel_strats:
+                horas_backtest(d, sc, hb, horas)
+    return {"est": out, "horas": horas}
 
 
 def get_perf(calcular=False):
@@ -1212,7 +1309,8 @@ def get_perf(calcular=False):
     if calcular:
         t0 = time.perf_counter()
         st.session_state["perf_cache"] = {
-            "chave": (interval, len(scan_list)), "dados": run_perf(),
+            "chave": (interval, len(scan_list), tuple(sorted(sel_strats))),
+            "dados": run_perf(),
             "quando": datetime.now(timezone.utc), "levou": time.perf_counter() - t0}
     return st.session_state.get("perf_cache")      # None = ainda não calculado
 
@@ -1611,7 +1709,20 @@ with tab_sig:
     if err:
         st.caption(f"Twelve Data: {err}")
 
-    if entries:
+    if not operando:
+        _motivo = ("Sistema desligado." if not sistema_on
+                   else f"Fora da faixa de operação ({jan_ini}h–{jan_fim}h, "
+                        f"horário de Brasília). Agora são {_h_br}h.")
+        st.markdown(
+            f'<div class="empty pausado"><div class="e-ico">'
+            f'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"'
+            f' stroke-linecap="round"><path d="M9 8v8M15 8v8"/></svg></div>'
+            f'<div class="e-txt"><b>Scanner pausado</b>'
+            f'<span>{_motivo} Nenhuma entrada é gerada nem gravada no histórico '
+            f'enquanto estiver assim — o forward test continua limpo.</span></div>'
+            f'<div class="e-side"><span class="k">Reativar em</span>'
+            f'<span class="v">Ajustes</span></div></div>', unsafe_allow_html=True)
+    elif entries:
         dim = "" if window_open else " stale"
         # Realce só quando a entrada em destaque REALMENTE mudou (ativo, direção
         # ou vela). Sem isso o cartão brilharia a cada rerun, que é o problema
@@ -1710,7 +1821,8 @@ with tab_perf:
             st.caption("O backtest baixa 1 mês de velas de todos os ativos — "
                        "leva alguns segundos e por isso só roda quando você pede.")
         else:
-            desatual = cp["chave"] != (interval, len(scan_list))
+            desatual = cp["chave"] != (interval, len(scan_list),
+                                       tuple(sorted(sel_strats)))
             q = f'calculado às {hm(cp["quando"])} em {cp["levou"]:.1f}s'
             st.caption(("⚠️ " + q + " — com outro timeframe/lista de ativos. Recalcule."
                         ) if desatual else q)
@@ -1719,7 +1831,8 @@ with tab_perf:
             cp = get_perf(calcular=True)
 
     if cp is not None:
-        perf = cp["dados"]
+        perf = cp["dados"]["est"]
+        horas = cp["dados"]["horas"]
         ranked = sorted(STRATEGIES, key=lambda k: (perf[k]["per"][1] / perf[k]["per"][0]) if perf[k]["per"][0] else 0,
                         reverse=True)
         top = ranked[0] if perf[ranked[0]]["per"][0] else None
@@ -1758,17 +1871,19 @@ with tab_perf:
                              help="O recorte do dia costuma ter poucas dezenas de "
                                   "operações — quase sempre ruído. Fica oculto por padrão.")
 
-        def linhas(nomes):
+        def linhas(nomes, com_rank=True):
             out = ""
-            for name in nomes:
+            for i, name in enumerate(nomes, 1):
                 p = perf[name]
                 tag = ""
                 if name == top:
                     tag = ('<span class="tagmini">VANTAGEM COMPROVADA</span>' if proven
                            else '<span class="tagmini">MAIOR TAXA · não comprovada</span>')
                 td_hoje = f'<td>{cell(*p["hoje"])}</td>' if ver_hoje else ""
+                rk = (f'<span class="rankn{" top" if i == 1 else ""}">{i}</span>'
+                      if com_rank else "")
                 out += (f'<tr class="{"on" if name in sel_strats else ""}">'
-                        f'<td class="nm">{name}{tag}</td>{td_hoje}'
+                        f'<td class="nm">{rk}{name}{tag}</td>{td_hoje}'
                         f'<td>{cell(*p["per"])}</td>{barra(*p["per"])}</tr>')
             return out
 
@@ -1806,6 +1921,50 @@ with tab_perf:
         st.markdown('<div class="sect">Todas as estratégias · ordenado pela taxa do período'
                     '</div>', unsafe_allow_html=True)
         st.markdown(f'<table class="tbl">{cab}{linhas(outras)}</table>', unsafe_allow_html=True)
+
+        # ---------- MELHORES HORÁRIOS ----------
+        tot_h = sum(v[0] for v in horas.values())
+        if tot_h >= 500:
+            st.markdown('<div class="sect">Horários · estratégias em uso, '
+                        'horário de Brasília</div>', unsafe_allow_html=True)
+            N_H = 150                      # mínimo por hora para a barra valer algo
+            col = ""
+            for h_ in range(24):
+                n_, w_ = horas[h_]
+                if n_ < N_H:
+                    col += (f'<div class="hcol"><i class="vazio"></i>'
+                            f'<span class="hh">{h_:02d}</span></div>')
+                    continue
+                p_ = w_ / n_ * 100
+                _, lo_, hi_ = wilson_ci(w_, n_)
+                acima = lo_ * 100 > BE      # IC inteiro acima: o critério de sempre
+                cls_ = "bom" if acima else ("ruim" if p_ < BE else "neutro")
+                alt = max(6, min(100, (p_ - 40) / 20 * 100))
+                col += (f'<div class="hcol" title="{h_:02d}h · {p_:.1f}% em {n_} ops '
+                        f'(IC95 {lo_*100:.0f}–{hi_*100:.0f}%)">'
+                        f'<i class="{cls_}" style="height:{alt:.0f}%"></i>'
+                        f'<span class="hh">{h_:02d}</span></div>')
+            melhores = [(h_, horas[h_]) for h_ in range(24)
+                        if horas[h_][0] >= N_H
+                        and wilson_ci(horas[h_][1], horas[h_][0])[1] * 100 > BE]
+            melhores.sort(key=lambda kv: -kv[1][1] / kv[1][0])
+            if melhores:
+                txt = " · ".join(f"<b>{h_:02d}h</b> {v[1]/v[0]*100:.1f}%"
+                                 for h_, v in melhores[:4])
+                cab_h = f'Horas cujo IC95 inteiro ficou acima do breakeven: {txt}'
+            else:
+                cab_h = ('<b>Nenhuma hora</b> teve o intervalo de confiança inteiro '
+                         'acima do breakeven neste período.')
+            st.markdown(f'<div class="horas"><div class="h-linha be"></div>{col}</div>'
+                        f'<div class="note">{cab_h}<br><b>Cuidado com esta tabela.</b> '
+                        f'São 24 horas testadas ao mesmo tempo: mesmo que nenhuma tenha '
+                        f'vantagem real, é provável que uma ou duas pareçam boas por '
+                        f'sorte. Use como hipótese a testar no forward test, não como '
+                        f'regra — e desconfie se a hora "boa" mudar toda vez que você '
+                        f'recalcular. A linha tracejada é o breakeven '
+                        f'({BE:.1f}%); barras cinza têm menos de {N_H} operações.</div>',
+                        unsafe_allow_html=True)
+
         st.markdown('<div class="note"><b>Como ler:</b> a taxa é medida operando toda vez que a estratégia '
                     'dispara, entrando na <b>abertura da vela seguinte</b>. Acerto pela cor da vela: COMPRA '
                     'vence se fechar <b style="color:#00e5a0">verde</b>, VENDA se fechar '
@@ -1937,11 +2096,17 @@ with tab_hist:
             for s in h["strats"]:
                 por_est.setdefault(s, []).append(h)
         if por_est:
+            def _taxa(itens):
+                f = [h for h in itens if h["res"] in ("ganhou", "perdeu")]
+                if not f:
+                    return (-1.0, 0)          # sem dados vai para o fim
+                w = sum(1 for h in f if h["res"] == "ganhou")
+                return (w / len(f), len(f))   # desempate pelo tamanho da amostra
+
             linhas = "".join(
                 linha_ic(s, "estratégia", v, PAYOUT)
-                for s, v in sorted(por_est.items(),
-                                   key=lambda kv: -sum(1 for h in kv[1]
-                                                       if h["res"] in ("ganhou", "perdeu"))))
+                for s, v in sorted(por_est.items(), key=lambda kv: _taxa(kv[1]),
+                                   reverse=True))
             st.markdown('<div class="sect">Forward test por estratégia</div>',
                         unsafe_allow_html=True)
             st.markdown(f'<table class="tbl"><tr><th>Recorte</th><th>Tipo</th><th>Ops</th>'
