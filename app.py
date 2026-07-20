@@ -118,6 +118,73 @@ def candle_key(m):
     return int(math.floor(datetime.now(timezone.utc).timestamp() / 60.0 / m))
 
 
+# ====================== FONTE DE DADOS: TWELVE DATA ======================
+# Chave lida dos secrets do Streamlit (nunca fica no código).
+def _td_key():
+    try:
+        k = st.secrets.get("TWELVE_DATA_KEY", "")
+    except Exception:
+        k = ""
+    return k or os.environ.get("TWELVE_DATA_KEY", "")
+
+
+TD_KEY = _td_key()
+TD_INTERVAL = {"1m": "1min", "5m": "5min", "15m": "15min"}
+
+
+def _td_to_df(values):
+    """Lista de velas da Twelve Data -> DataFrame OHLC (UTC, crescente)."""
+    rows = []
+    for v in values:
+        try:
+            rows.append((pd.Timestamp(v["datetime"]), float(v["open"]), float(v["high"]),
+                         float(v["low"]), float(v["close"])))
+        except Exception:
+            continue
+    if not rows:
+        return None
+    df = pd.DataFrame(rows, columns=["dt", "Open", "High", "Low", "Close"]).set_index("dt")
+    df = df.sort_index()
+    if getattr(df.index, "tz", None) is not None:
+        df.index = df.index.tz_convert("UTC").tz_localize(None)
+    return df
+
+
+def td_fetch(symbols, interval, outputsize=250):
+    """
+    Busca vários símbolos em UMA requisição (1 crédito por símbolo).
+    Retorna {símbolo: DataFrame} — só os que vieram OK.
+    """
+    if not TD_KEY or not symbols:
+        return {}
+    import requests
+    try:
+        r = requests.get("https://api.twelvedata.com/time_series",
+                         params={"symbol": ",".join(symbols),
+                                 "interval": TD_INTERVAL[interval],
+                                 "outputsize": outputsize, "timezone": "UTC",
+                                 "apikey": TD_KEY, "format": "JSON"}, timeout=9)
+        j = r.json()
+    except Exception:
+        return {}
+    out = {}
+    if isinstance(j, dict) and "values" in j and len(symbols) == 1:      # resposta simples
+        d = _td_to_df(j["values"])
+        if d is not None:
+            out[symbols[0]] = d
+        return out
+    if isinstance(j, dict) and j.get("code") in (429, 401, 403):         # limite/credencial
+        st.session_state["td_erro"] = j.get("message", "limite atingido")
+        return {}
+    if isinstance(j, dict):                                             # resposta múltipla
+        for sym, blk in j.items():
+            if isinstance(blk, dict) and blk.get("status") == "ok" and "values" in blk:
+                d = _td_to_df(blk["values"])
+                if d is not None:
+                    out[sym] = d
+    return out
+
+
 def _dl(yf_symbol, interval, period):
     try:
         import yfinance as yf
@@ -136,20 +203,39 @@ def _dl(yf_symbol, interval, period):
 
 
 def get_data_live(assets, interval, minutes):
-    """Janela CURTA — é o caminho crítico do sinal. Refeita a cada vela."""
+    """
+    Janela CURTA — caminho crítico do sinal. Refeita a cada vela.
+    Forex vem da Twelve Data (1 requisição para todos os pares) quando há chave;
+    o que falhar cai para o yfinance. Cripto continua no yfinance.
+    """
     cache = st.session_state.setdefault("ohlc_live", {})
     ck = candle_key(minutes)
     todo = [a for a in assets if (a["yf"], interval, ck) not in cache]
-    took = 0.0
+    took, fontes = 0.0, st.session_state.setdefault("fontes", {})
     if todo:
         t0 = time.perf_counter()
-        with ThreadPoolExecutor(max_workers=min(10, len(todo))) as ex:
-            futs = {ex.submit(_dl, a["yf"], interval, TF_PERIOD_LIVE[interval]): a for a in todo}
-            for f in as_completed(futs):
-                cache[(futs[f]["yf"], interval, ck)] = f.result()
+        pend = list(todo)
+        # 1) Twelve Data para os pares de forex
+        if TD_KEY:
+            fx = [a for a in pend if a["type"] == "fx"]
+            if fx:
+                got = td_fetch([a["name"] for a in fx], interval)
+                for a in fx:
+                    d = got.get(a["name"])
+                    if d is not None and len(d):
+                        cache[(a["yf"], interval, ck)] = d
+                        fontes[a["name"]] = "twelvedata"
+                        pend.remove(a)
+        # 2) yfinance para o resto (cripto + eventuais falhas)
+        if pend:
+            with ThreadPoolExecutor(max_workers=min(10, len(pend))) as ex:
+                futs = {ex.submit(_dl, a["yf"], interval, TF_PERIOD_LIVE[interval]): a for a in pend}
+                for f in as_completed(futs):
+                    a = futs[f]
+                    cache[(a["yf"], interval, ck)] = f.result()
+                    fontes[a["name"]] = "yfinance"
         took = time.perf_counter() - t0
         st.session_state["last_fetch_s"] = took
-        # limpa chaves de velas antigas para a sessão não crescer sem limite
         for k in [k for k in cache if k[2] < ck - 3]:
             cache.pop(k, None)
     return {a["name"]: cache.get((a["yf"], interval, ck)) for a in assets}, took
@@ -720,7 +806,16 @@ with tab_sig:
 
     # medição real da latência (transparência)
     render_s = time.perf_counter() - t_scan0
-    st.markdown(f'<div class="lat">busca dos candles <b>{fetch_s:.1f}s</b> · '
+    _f = st.session_state.get("fontes", {})
+    n_td = sum(1 for v in _f.values() if v == "twelvedata")
+    if TD_KEY:
+        fonte_txt = f"fonte <b>Twelve Data</b> ({n_td} pares) + yfinance"
+        err = st.session_state.get("td_erro")
+        if err:
+            fonte_txt = f'fonte <b>yfinance</b> — Twelve Data indisponível: {err}'
+    else:
+        fonte_txt = "fonte <b>yfinance</b> (sem chave da Twelve Data)"
+    st.markdown(f'<div class="lat">{fonte_txt} · busca <b>{fetch_s:.1f}s</b> · '
                 f'processamento <b>{max(0.0, render_s - fetch_s):.1f}s</b> · '
                 f'defasagem da última vela <b>{(lag_min or 0):.1f} min</b></div>',
                 unsafe_allow_html=True)
