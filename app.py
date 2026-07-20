@@ -300,6 +300,21 @@ div[data-testid="stMetricLabel"] p{font-size:.58rem!important;letter-spacing:.14
   text-transform:uppercase;color:var(--mut)!important;font-weight:600!important}
 div[data-testid="stMetricValue"]{font-family:'IBM Plex Mono',monospace;font-size:1.3rem;
   font-variant-numeric:tabular-nums}
+/* ---------- janela de entrada / alertas ---------- */
+.win{display:flex;align-items:center;gap:10px;border-radius:10px;padding:11px 16px;
+  font-size:.82rem;color:var(--ink2);margin:16px 0 4px;border:1px solid var(--line)}
+.win .pt{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
+.win b{color:var(--ink);font-weight:600}
+.win.ok{background:var(--buy-dim);border-color:rgba(0,200,138,.28)}
+.win.ok .pt{background:var(--buy);box-shadow:0 0 0 3px rgba(0,200,138,.18);
+  animation:bl 1.2s ease-in-out infinite}
+.win.wait{background:var(--surf)}
+.win.wait .pt{background:var(--mut)}
+.win.alert{background:rgba(217,164,65,.09);border-color:rgba(217,164,65,.3);color:#E4C48A}
+.win.alert .pt{background:var(--warn)}
+@keyframes bl{0%,100%{opacity:.45}50%{opacity:1}}
+.hero.stale,.card.stale{opacity:.42;filter:saturate(.55)}
+.hero.stale{border-color:var(--line)}
 /* remove o vão que o iframe do contador cria */
 div[data-testid="element-container"]:has(iframe){margin-top:-6px;margin-bottom:-10px}
 div[data-testid="stExpander"]{margin-bottom:4px}
@@ -360,14 +375,40 @@ with st.expander("Mais opções — filtros, áudio, payout e atualização"):
 PAYOUT = 0.80 if payout_lbl == "80%" else 0.90
 BE = breakeven(PAYOUT) * 100
 
-if auto_on:
-    st_autorefresh(interval=every * 1000, key="auto")
-
 now = datetime.now(timezone.utc)
 interval, minutes = TF_YF[TF], int(TF)
+
+# ---- janela de entrada: o backtest assume entrada na ABERTURA da vela ----
+ENTRY_WINDOW = 20                                   # segundos válidos após a virada
+_per = minutes * 60
+_age = now.timestamp() % _per                       # segundos decorridos da vela atual
+secs_to_next = _per - _age
+window_open = _age <= ENTRY_WINDOW
+
+# refresh: acorda exatamente na virada da vela (assim a janela nunca é perdida)
+if auto_on:
+    st_autorefresh(interval=int(min(every, max(3, secs_to_next + 1)) * 1000), key="auto")
+
 open_assets = [a for a in ASSETS if pair_open(a, now)]
 scan_list = ASSETS if show_closed else open_assets
 data = get_data(scan_list, interval, minutes)
+
+
+def data_lag(data_map):
+    """Maior atraso (min) entre a última vela recebida e o relógio."""
+    ref = pd.Timestamp(now).tz_localize(None)
+    pior, quem = None, None
+    for nome, df in data_map.items():
+        if df is None or len(df) == 0:
+            continue
+        lag = (ref - df.index[-1]).total_seconds() / 60.0
+        if pior is None or lag > pior:
+            pior, quem = lag, nome
+    return pior, quem
+
+
+lag_min, lag_asset = data_lag(data)
+dados_atrasados = lag_min is not None and lag_min > (2 * minutes + 1)
 
 # ============================== SCANNER ==============================
 agg = {}
@@ -474,7 +515,7 @@ components.html(f"""
 m=Math.floor(l/60),s=Math.floor(l%60);
 document.getElementById('k').textContent=(m<10?'0':'')+m+':'+(s<10?'0':'')+s;
 document.getElementById('f').style.width=((pos/per)*100).toFixed(1)+'%';
-document.getElementById('e').innerHTML=pos<12?'<span class="badge" style="animation:pulse 1.1s infinite">NOVA ENTRADA</span>':'';}}
+document.getElementById('e').innerHTML=pos<{ENTRY_WINDOW}?'<span class="badge" style="animation:pulse 1.1s infinite">ENTRADA VÁLIDA</span>':'';}}
 t();setInterval(t,1000);</script>""", height=52)
 
 def _short(nm):
@@ -615,14 +656,34 @@ def card_html(e):
 # ============================== ABA SINAIS ==============================
 with tab_sig:
     cvela = hm(pd.Timestamp(candle_key(minutes) * minutes * 60, unit="s"))
+
+    # --- estado da janela de entrada ---
+    if window_open:
+        st.markdown(f'<div class="win ok"><span class="pt"></span>'
+                    f'<b>Entrada válida agora</b> — vela das {cvela}. '
+                    f'Restam {int(ENTRY_WINDOW - _age)}s desta janela.</div>', unsafe_allow_html=True)
+    else:
+        mm, ss = divmod(int(secs_to_next), 60)
+        st.markdown(f'<div class="win wait"><span class="pt"></span>'
+                    f'<b>Vela em andamento</b> — já se passaram {int(_age)}s desta vela. '
+                    f'Próxima janela de entrada em {mm:02d}:{ss:02d}.</div>', unsafe_allow_html=True)
+
+    if dados_atrasados:
+        st.markdown(f'<div class="win alert"><span class="pt"></span>'
+                    f'<b>Dados atrasados</b> — a vela mais recente ({lag_asset}) chegou há '
+                    f'{lag_min:.0f} min. O sinal pode estar calculado sobre dados vencidos.</div>',
+                    unsafe_allow_html=True)
+
     if entries:
-        st.markdown(hero_html(entries[0], cvela), unsafe_allow_html=True)
+        dim = "" if window_open else " stale"
+        st.markdown(hero_html(entries[0], cvela).replace('class="hero ', f'class="hero{dim} '),
+                    unsafe_allow_html=True)
         rest = entries[1:]
         st.markdown(f'<div class="sect">Outras entradas · {len(entries)} no total</div>',
                     unsafe_allow_html=True)
         if rest:
-            st.markdown(f'<div class="grid">{"".join(card_html(e) for e in rest)}</div>',
-                        unsafe_allow_html=True)
+            cards = "".join(card_html(e).replace('class="card ', f'class="card{dim} ') for e in rest)
+            st.markdown(f'<div class="grid">{cards}</div>', unsafe_allow_html=True)
         else:
             st.caption("Esta é a única entrada no momento.")
     else:
@@ -668,7 +729,7 @@ with tab_sig:
         if(sessionStorage.getItem('voz')==='1')document.getElementById('s').textContent='voz ativada';
         (function(){{if(!FALA)return;if(sessionStorage.getItem('voz')!=='1')return;
           var per=TF*60,n=Date.now()/1000,pos=n%per,c=Math.floor(n/per);
-          if(pos<12&&sessionStorage.getItem('dito')!=String(c)){{
+          if(pos<{ENTRY_WINDOW}&&sessionStorage.getItem('dito')!=String(c)){{
             sessionStorage.setItem('dito',String(c));say(FALA);}}}})();
         </script>""", height=44)
 
