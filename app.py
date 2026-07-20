@@ -471,11 +471,15 @@ hr{border-color:var(--line)}
 .vbar{width:1px;height:30px;background:var(--line2);flex:none}
 /* Contador no cabeçalho: o relógio fica onde o olho já procura tempo, e o app
    deixa de gastar uma faixa inteira só para isso. */
-.cd-meta{min-width:112px}
+.cd-meta{min-width:92px}
 .cd-meta .v{font-size:1.02rem;letter-spacing:.01em;transition:color .3s}
-.cd-track{display:block;height:2px;border-radius:2px;background:rgba(255,255,255,.08);
-  margin-top:5px;overflow:hidden}
-.cd-track i{display:block;height:100%;width:0;background:var(--buy);transition:width .9s linear}
+/* A barra de progresso atravessa o rodapé do cabeçalho inteiro. Dentro da
+   métrica ela desalinhava a linha de base em relação às outras. */
+.hdr{position:relative;overflow:hidden}
+.hdr-prog{position:absolute;left:0;right:0;bottom:0;height:2px;
+  background:rgba(255,255,255,.05)}
+.hdr-prog i{display:block;height:100%;width:0;background:var(--buy);
+  transition:width .9s linear;box-shadow:0 0 10px rgba(0,200,138,.5)}
 .cd-badge{font-size:.56rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
   padding:5px 10px;border-radius:999px;background:rgba(0,200,138,.12);color:var(--buy);
   border:1px solid rgba(0,200,138,.3);animation:lpulse 1.2s ease-in-out infinite}
@@ -751,7 +755,12 @@ div[data-testid="stMetricValue"]{font-family:'IBM Plex Mono',monospace;font-size
 /* com 4+ estratégias a caixa do meio cresce; ancorando tudo no topo, as colunas
    vizinhas não são empurradas para o meio da altura */
 [data-testid="stHorizontalBlock"]:has(.lbl) [data-testid="stSelectSlider"]{padding-top:10px}
-.stMultiSelect [data-baseweb="select"]>div{flex-wrap:wrap}
+.stMultiSelect [data-baseweb="select"]>div{flex-wrap:wrap;align-items:flex-start;
+  padding-top:5px;padding-bottom:5px}
+/* o "limpar" e a seta ficavam boiando no meio vertical quando havia 4+ chips */
+.stMultiSelect [data-baseweb="select"]>div>div:last-child{align-self:flex-start;
+  padding-top:3px}
+.stMultiSelect [data-baseweb="tag"]{margin:2px 3px 2px 0!important}
 @media(max-width:900px){.hero{grid-template-columns:1fr}.hero-side{border-left:0;border-top:1px solid var(--line)}}
 
 /* ---------- ACABAMENTO ---------- */
@@ -791,6 +800,14 @@ div[data-testid="stExpander"] summary:hover{color:var(--ink)}
 .foot{margin:var(--gap-secao) 0 8px;text-align:center;font-size:.66rem;color:var(--mut);
   border-top:1px solid var(--line);padding-top:16px}
 
+/* Barra "vs. breakeven" na tabela de desempenho. */
+.barcel{vertical-align:middle}
+.bar{position:relative;height:8px;border-radius:4px;background:rgba(255,255,255,.05);
+  overflow:hidden;min-width:150px}
+.bar .fill{position:absolute;left:0;top:0;height:100%;border-radius:4px;display:block}
+.bar .be{position:absolute;top:-3px;width:1px;height:14px;background:var(--warn);
+  display:block;opacity:.9}
+
 /* Curva da taxa acumulada. */
 .curva{background:var(--surf);border:1px solid var(--line);border-radius:var(--r);
   padding:var(--pad-card);margin:var(--gap-bloco) 0 var(--gap-curto)}
@@ -800,7 +817,7 @@ div[data-testid="stExpander"] summary:hover{color:var(--ink)}
   color:var(--mut);font-weight:600}
 .curva .lg{display:inline-flex;align-items:center;gap:6px;font-size:.64rem;color:var(--mut)}
 .curva .lg i.be{width:14px;height:0;border-top:1px dashed var(--warn);display:inline-block}
-.curva svg{width:100%;height:78px;display:block}
+.curva svg{width:100%;height:140px;display:block}
 .curva .c-foot{display:flex;justify-content:space-between;margin-top:8px;
   font-size:.64rem;color:var(--mut)}
 .curva .c-foot .mono{font-family:'IBM Plex Mono',monospace;color:var(--ink2);font-weight:600}
@@ -892,7 +909,13 @@ with cc3:
                                  label_visibility="collapsed")
 st.markdown('</div>', unsafe_allow_html=True)
 
-with st.expander("Mais opções — filtros, áudio, payout e atualização"):
+# As abas nascem aqui, logo abaixo da barra de controles. Antes o painel de
+# ajustes era um expander no meio da tela de operação; agora é uma aba própria e
+# a tela principal fica só com o que importa na hora de entrar.
+tab_sig, tab_perf, tab_hist, tab_cfg = st.tabs(
+    ["Sinais", "Desempenho", "Histórico", "Ajustes"])
+
+with tab_cfg:
     o1, o2, o3 = st.columns(3)
     with o1:
         st.markdown("**Filtros**")
@@ -901,7 +924,25 @@ with st.expander("Mais opções — filtros, áudio, payout e atualização"):
     with o2:
         st.markdown("**Áudio**")
         audio_on = st.toggle("🔊 Aviso por voz na entrada", value=False)
-        st.caption("O navegador exige um clique para liberar som — o botão aparece na aba Sinais.")
+        st.caption("O navegador só toca som depois de um clique seu. Libere aqui:")
+        html_box("""
+        <div style="font-family:Inter,sans-serif">
+          <button id="u" style="background:rgba(0,200,138,.10);color:#00C88A;
+            border:1px solid rgba(0,200,138,.32);border-radius:10px;padding:9px 15px;
+            font-weight:600;cursor:pointer;font-size:.78rem;font-family:inherit">
+            Liberar áudio neste navegador</button>
+          <div id="s" style="color:#6F7B93;font-size:.68rem;margin-top:7px"></div>
+        </div>
+        <script>
+        function say(t){try{var u=new SpeechSynthesisUtterance(t);u.lang='pt-BR';
+          u.rate=1.05;window.speechSynthesis.cancel();window.speechSynthesis.speak(u);}catch(e){}}
+        var el=document.getElementById('s');
+        function estado(){el.textContent = window.parent.sessionStorage.getItem('voz')==='1'
+          ? 'Áudio liberado nesta aba.' : 'Áudio ainda não liberado.';}
+        document.getElementById('u').onclick=function(){
+          window.parent.sessionStorage.setItem('voz','1');say('Voz ativada.');estado();};
+        estado();
+        </script>""", height=88)
     with o3:
         st.markdown("**Análise e atualização**")
         payout_lbl = st.radio("Payout padrão da corretora", ["80%", "90%"], index=0,
@@ -1113,10 +1154,10 @@ topbar_slot.markdown(f"""
     <div class="meta"><span class="k">Horário de Brasília</span>
       <span class="v mono">{br(now).strftime('%H:%M:%S')}</span></div>
     <div class="meta cd-meta"><span class="k">Próxima vela</span>
-      <span class="v mono" id="kairo-cd">--:--</span>
-      <span class="cd-track"><i id="kairo-cdfill"></i></span></div>
+      <span class="v mono" id="kairo-cd">--:--</span></div>
     <span id="kairo-cdbadge"></span>
   </div>
+  <span class="hdr-prog"><i id="kairo-cdfill"></i></span>
   <a class="livebtn {'on' if auto_on else ''}" target="_self"
      href="?live={'0' if auto_on else '1'}"
      title="{'Pausar a atualização automática para ler as tabelas paradas'
@@ -1346,7 +1387,6 @@ def record_and_resolve(entries, data, minutes):
 
 hist = record_and_resolve(entries, data, minutes)
 
-tab_sig, tab_perf, tab_hist = st.tabs(["Sinais", "Desempenho", "Histórico"])
 
 
 def bars(f):
@@ -1512,25 +1552,20 @@ with tab_sig:
                     f"{pl} {ests}. Força {FL[top['force']].lower()}.")
         else:
             fala = ""
+        # Só o MOTOR de fala fica aqui, invisível. O botão de ativar mudou para a
+        # aba Ajustes: liberar o áudio é configuração, não parte da operação.
+        # (O navegador exige um clique do usuário antes de permitir voz.)
+        st.markdown('<div class="wheel-pass"></div>', unsafe_allow_html=True)
         html_box(f"""
-        <div style="font-family:Inter,sans-serif;margin-top:6px">
-          <button id="u" style="background:rgba(0,229,160,.12);color:#7df0c6;
-            border:1px solid rgba(0,229,160,.3);border-radius:9px;padding:7px 14px;
-            font-weight:700;cursor:pointer;font-size:.75rem">🔊 Ativar / testar voz</button>
-          <span id="s" style="color:#8697bd;font-size:.7rem;margin-left:9px"></span>
-        </div>
         <script>
         var TF={int(TF)}, FALA={fala!r};
         function say(t){{try{{var u=new SpeechSynthesisUtterance(t);u.lang='pt-BR';u.rate=1.05;
           window.speechSynthesis.cancel();window.speechSynthesis.speak(u);}}catch(e){{}}}}
-        document.getElementById('u').onclick=function(){{sessionStorage.setItem('voz','1');
-          say('Voz ativada.');document.getElementById('s').textContent='voz ativada';}};
-        if(sessionStorage.getItem('voz')==='1')document.getElementById('s').textContent='voz ativada';
-        (function(){{if(!FALA)return;if(sessionStorage.getItem('voz')!=='1')return;
+        (function(){{if(!FALA)return;if(window.parent.sessionStorage.getItem('voz')!=='1')return;
           var per=TF*60,n=Date.now()/1000,pos=n%per,c=Math.floor(n/per);
-          if(pos<{ENTRY_WINDOW}&&sessionStorage.getItem('dito')!=String(c)){{
-            sessionStorage.setItem('dito',String(c));say(FALA);}}}})();
-        </script>""", height=54)
+          if(pos<{ENTRY_WINDOW}&&window.parent.sessionStorage.getItem('dito')!=String(c)){{
+            window.parent.sessionStorage.setItem('dito',String(c));say(FALA);}}}})();
+        </script>""", height=1)
 
 # ============================== ABA DESEMPENHO ==============================
 with tab_perf:
@@ -1630,12 +1665,30 @@ with tab_perf:
                 td_hoje = f'<td>{cell(*p["hoje"])}</td>' if ver_hoje else ""
                 out += (f'<tr class="{"on" if name in sel_strats else ""}">'
                         f'<td class="nm">{name}{tag}</td>{td_hoje}'
-                        f'<td>{cell(*p["per"])}</td></tr>')
+                        f'<td>{cell(*p["per"])}</td>{barra(*p["per"])}</tr>')
             return out
+
+        def barra(n, w):
+            """Barra horizontal com o breakeven marcado. Lê-se de relance de que
+            lado da linha a estratégia está, sem precisar comparar números."""
+            if n == 0:
+                return '<td class="barcel"></td>'
+            p = w / n * 100
+            lo, hi = 35.0, 75.0                      # faixa útil do eixo
+            pos = max(0.0, min(100.0, (p - lo) / (hi - lo) * 100))
+            be_pos = max(0.0, min(100.0, (BE - lo) / (hi - lo) * 100))
+            fraca = n < N_MIN
+            cor = ("var(--mut)" if fraca
+                   else ("var(--buy)" if p >= BE else "var(--sell)"))
+            return (f'<td class="barcel"><div class="bar">'
+                    f'<i class="fill" style="width:{pos:.1f}%;background:{cor};'
+                    f'opacity:{".45" if fraca else "1"}"></i>'
+                    f'<i class="be" style="left:{be_pos:.1f}%"></i></div></td>')
 
         cab = ('<tr><th>Estratégia</th>'
                + (f'<th>Hoje</th>' if ver_hoje else "")
-               + f'<th>Período ({TF_PERIOD[interval]})</th></tr>')
+               + f'<th>Período ({TF_PERIOD[interval]})</th>'
+               + f'<th style="width:190px">Vs. breakeven</th></tr>')
 
         # Em uso primeiro, separadas do resto: é a informação que você consulta
         # antes de operar. O resto é catálogo.
