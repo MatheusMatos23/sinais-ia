@@ -1324,7 +1324,12 @@ def get_perf(calcular=False):
     return st.session_state.get("perf_cache")      # None = ainda não calculado
 
 # ============================== TOPBAR ==============================
-if market_open(now):
+# Cripto opera 24/7: com a varredura só em cripto, "Forex fechado" não descreve
+# nada do que está acontecendo e só confunde.
+if mercado == "Só cripto":
+    stat = '<span class="dotstat"><i></i>Cripto · 24/7</span>'
+    sess = '<span class="sess-tag">sem janela de sessão</span>'
+elif market_open(now):
     stat = '<span class="dotstat"><i></i>Mercado aberto</span>'
     sess = "".join(f'<span class="sess-tag" title="{s}: {sess_window_br(s)} (Brasília)">{s}</span>'
                    for s in active_sessions(now)) or '<span class="sess-tag">—</span>'
@@ -1532,6 +1537,7 @@ def hist_df(h):
         "ativo": r["asset"], "direcao": r["dir"], "forca": FL.get(r["force"], r["force"]),
         "estrategias": "+".join(r["strats"]), "timeframe_min": r.get("tf", ""),
         "resultado": r["res"] or "aguardando",
+        "executei": bool(r.get("exec", False)),
         "atraso_min": r.get("lag", ""), "fonte": r.get("src", ""),
         "payout": r.get("payout", ""),
     } for r in sorted(h, key=lambda x: x["ts"], reverse=True)])
@@ -1935,8 +1941,8 @@ with tab_perf:
         # ---------- MELHORES HORÁRIOS ----------
         tot_h = sum(v[0] for v in horas.values())
         if tot_h >= 500:
-            st.markdown('<div class="sect">Horários · estratégias em uso, '
-                        'horário de Brasília</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="sect">Horários · {mercado.lower()} · estratégias '
+                        f'em uso · horário de Brasília</div>', unsafe_allow_html=True)
             N_H = 150                      # mínimo por hora para a barra valer algo
             col = ""
             for h_ in range(24):
@@ -1975,6 +1981,30 @@ with tab_perf:
                         f'({BE:.1f}%); barras cinza têm menos de {N_H} operações.</div>',
                         unsafe_allow_html=True)
 
+        # Exportação do backtest: o Histórico já exportava, o Desempenho não.
+        _rows = []
+        for nm_ in ranked:
+            p_ = perf[nm_]
+            n_, w_ = p_["per"]
+            nh_, wh_ = p_["hoje"]
+            _p, _lo, _hi = wilson_ci(w_, n_) if n_ else (float("nan"),) * 3
+            _rows.append({
+                "estrategia": nm_, "em_uso": nm_ in sel_strats,
+                "timeframe_min": TF, "payout": PAYOUT, "breakeven_pct": round(BE, 2),
+                "ops_periodo": n_, "acertos_periodo": w_,
+                "taxa_periodo_pct": round(w_ / n_ * 100, 2) if n_ else None,
+                "ic95_lo_pct": round(_lo * 100, 2) if n_ else None,
+                "ic95_hi_pct": round(_hi * 100, 2) if n_ else None,
+                "veredito": verdict(w_, n_, PAYOUT) if n_ else "sem dados",
+                "ops_hoje": nh_, "acertos_hoje": wh_,
+            })
+        _df = pd.DataFrame(_rows)
+        st.download_button(
+            "Baixar backtest (CSV)",
+            data=_df.to_csv(index=False).encode("utf-8-sig"),
+            file_name=f"kairo_backtest_{TF}min_{br(now).strftime('%Y%m%d_%H%M')}.csv",
+            mime="text/csv", key="dl_perf")
+
         st.markdown('<div class="note"><b>Como ler:</b> a taxa é medida operando toda vez que a estratégia '
                     'dispara, entrando na <b>abertura da vela seguinte</b>. Acerto pela cor da vela: COMPRA '
                     'vence se fechar <b style="color:#00e5a0">verde</b>, VENDA se fechar '
@@ -1991,10 +2021,42 @@ with tab_hist:
         st.caption("Ainda não há sinais registrados nesta sessão. Cada entrada que aparecer "
                    "será gravada aqui e o resultado apurado quando a vela fechar.")
     else:
-        fechados = [h for h in hist if h["res"] in ("ganhou", "perdeu")]
+        # ---- filtros PRIMEIRO ----
+        # Eles definem `vis`, e TODO o resto da aba — cartões, curva, tabelas —
+        # é calculado sobre `vis`. Antes só a tabela final respeitava o filtro,
+        # então os números do topo diziam uma coisa e a lista embaixo outra.
+        f1, f2, f3 = st.columns([2, 1.4, 1])
+        with f1:
+            todas_est = sorted({s for h in hist for s in h["strats"]})
+            f_est = st.multiselect("Estratégia", todas_est, default=[],
+                                   placeholder="Todas as estratégias")
+        with f2:
+            f_res = st.multiselect("Resultado",
+                                   ["ganhou", "perdeu", "empate", "aguardando"], default=[],
+                                   placeholder="Todos os resultados")
+        with f3:
+            # Misturar 1min e 5min numa taxa só é comparar coisas diferentes.
+            tfs = sorted({h.get("tf") for h in hist if h.get("tf")})
+            f_tf = st.multiselect("Timeframe", tfs, default=[],
+                                  format_func=lambda v: f"{v} min",
+                                  placeholder="Todos")
+        vis = [h for h in hist
+               if (not f_est or any(x in f_est for x in h["strats"]))
+               and (not f_res or (h["res"] or "aguardando") in f_res)
+               and (not f_tf or h.get("tf") in f_tf)]
+        filtrado = len(vis) != len(hist)
+        if filtrado:
+            st.caption(f"Filtro ativo: {len(vis)} de {len(hist)} sinais. "
+                       f"Todos os números abaixo consideram apenas esse recorte.")
+        if not vis:
+            # Nada de st.stop() aqui: ele encerraria o script inteiro e levaria
+            # junto o rodapé. As seções abaixo já degradam bem com lista vazia.
+            st.info("Nenhum sinal atende aos filtros selecionados.")
+
+        fechados = [h for h in vis if h["res"] in ("ganhou", "perdeu")]
         g = sum(1 for h in fechados if h["res"] == "ganhou")
-        emp = sum(1 for h in hist if h["res"] == "empate")
-        abertos = sum(1 for h in hist if h["res"] is None)
+        emp = sum(1 for h in vis if h["res"] == "empate")
+        abertos = sum(1 for h in vis if h["res"] is None)
         taxa = (g / len(fechados) * 100) if fechados else float("nan")
         # Cartões próprios em vez de st.metric: o componente padrão do Streamlit
         # tem outra tipografia e destoa do resto da interface.
@@ -2016,18 +2078,46 @@ with tab_hist:
 
         st.markdown(
             '<div class="statrow">'
-            + stat("Sinais registrados", len(hist), f"{abertos} aguardando fechar")
+            + stat("Sinais registrados", len(vis), f"{abertos} aguardando fechar")
             + stat("Resolvidos", len(fechados), f"{emp} empate(s) devolvido(s)")
             + stat("Acertos", g, f"de {len(fechados)} operações")
             + stat("Taxa do forward test", taxa_txt, sub, tcls)
             + '</div>', unsafe_allow_html=True)
         st.caption(f"Breakeven {BE:.2f}% com payout {payout_lbl}.")
 
+        # ---- aviso de sequência ruim ----
+        # Não prova nada sobre a estratégia: sequências ruins acontecem mesmo com
+        # 55% de acerto. O aviso existe porque este é o momento em que se costuma
+        # dobrar a aposta para recuperar — e é aí que uma perda administrável
+        # vira uma perda grande.
+        ult = [h for h in sorted(vis, key=lambda x: x["ts"])
+               if h["res"] in ("ganhou", "perdeu")][-12:]
+        if len(ult) >= 8:
+            perdas = sum(1 for h in ult if h["res"] == "perdeu")
+            seguidas = 0
+            for h in reversed(ult):
+                if h["res"] == "perdeu":
+                    seguidas += 1
+                else:
+                    break
+            if seguidas >= 4 or perdas / len(ult) >= 0.7:
+                det = (f"{seguidas} perdas seguidas" if seguidas >= 4
+                       else f"{perdas} perdas nas últimas {len(ult)}")
+                st.markdown(
+                    f'<div class="win alert"><span class="pt"></span><div class="msg">'
+                    f'<b>Sequência ruim — {det}.</b> Isso acontece mesmo em estratégias '
+                    f'com vantagem: com 55% de acerto, 4 perdas seguidas ocorrem a cada '
+                    f'~25 sequências. O risco aqui não é estatístico, é de decisão — '
+                    f'aumentar a aposta para recuperar é o que transforma uma perda '
+                    f'administrável em uma perda grande. Se for parar, pare por ter '
+                    f'decidido antes, não por estar perdendo agora.</div></div>',
+                    unsafe_allow_html=True)
+
         # ---- curva da taxa acumulada ----
         # Mostra se o número é estável ou fruto de uma sequência. Uma taxa que
         # sobe e desce muito com a amostra crescendo é sinal de que ainda não há
         # informação suficiente, por mais bonito que esteja o valor final.
-        seq = [h for h in sorted(hist, key=lambda x: x["ts"])
+        seq = [h for h in sorted(vis, key=lambda x: x["ts"])
                if h["res"] in ("ganhou", "perdeu")]
         if len(seq) >= 8:
             acum, w = [], 0
@@ -2059,25 +2149,6 @@ with tab_hist:
                 f'<span class="mono">{acum[-1]:.1f}% em {len(acum)} ops</span></div></div>',
                 unsafe_allow_html=True)
 
-        # ---- filtros ----
-        f1, f2 = st.columns([2, 1])
-        with f1:
-            todas_est = sorted({s for h in hist for s in h["strats"]})
-            f_est = st.multiselect("Filtrar por estratégia", todas_est, default=[],
-                                   placeholder="Todas as estratégias")
-        with f2:
-            f_res = st.multiselect("Filtrar por resultado",
-                                   ["ganhou", "perdeu", "empate", "aguardando"], default=[],
-                                   placeholder="Todos os resultados")
-        # Misturar 1min e 5min numa taxa só é comparar coisas diferentes.
-        tfs = sorted({h.get("tf") for h in hist if h.get("tf")})
-        f_tf = st.multiselect("Filtrar por timeframe", tfs, default=[],
-                              format_func=lambda v: f"{v} min",
-                              placeholder="Todos os timeframes")
-        vis = [h for h in hist
-               if (not f_est or any(s in f_est for s in h["strats"]))
-               and (not f_res or (h["res"] or "aguardando") in f_res)
-               and (not f_tf or h.get("tf") in f_tf)]
 
         VTXT = {"acima": ('v-good', 'acima do breakeven'),
                 "abaixo": ('v-bad', 'abaixo do breakeven'),
@@ -2102,7 +2173,7 @@ with tab_hist:
 
         # ---- por estratégia (um sinal com 2 estratégias conta nas duas) ----
         por_est = {}
-        for h in hist:
+        for h in vis:
             for s in h["strats"]:
                 por_est.setdefault(s, []).append(h)
         if por_est:
@@ -2124,7 +2195,7 @@ with tab_hist:
                         unsafe_allow_html=True)
 
         # ---- dado fresco x dado atrasado: a pergunta que a instrumentação responde ----
-        com_lag = [h for h in hist if isinstance(h.get("lag"), (int, float))
+        com_lag = [h for h in vis if isinstance(h.get("lag"), (int, float))
                    and math.isfinite(h["lag"])]
         if com_lag:
             corte = max(1.0, float(minutes))
@@ -2209,6 +2280,57 @@ with tab_hist:
             '(de um Gist privado contendo o arquivo <code>sinais_historico.json</code>).<br>'
             'Enquanto isso, baixe o CSV abaixo com frequência.</div></div>',
             unsafe_allow_html=True)
+
+    if hist:
+        # ---- marcação do que foi realmente executado ----
+        # O app registra tudo que sinalizou, mas ninguém opera todos os sinais.
+        # Marcando o que você executou de fato, o forward test passa a medir a
+        # SUA operação, não a sugestão do app — que é a única medida que importa
+        # para decidir se vale continuar.
+        st.markdown('<div class="sect">O que você executou de fato</div>',
+                    unsafe_allow_html=True)
+        _recentes = sorted(vis, key=lambda x: x["ts"], reverse=True)[:25]
+        _tab = pd.DataFrame([{
+            "id": f'{h["asset"]}|{h["dir"]}|{h.get("ck")}|{h.get("tf")}',
+            "Executei": bool(h.get("exec", False)),
+            "Quando": dhm(h["ts"]), "Ativo": h["asset"], "Direção": h["dir"],
+            "TF": f'{h.get("tf", "—")}m',
+            "Estratégias": "+".join(h["strats"]),
+            "Resultado": h["res"] or "aguardando",
+        } for h in _recentes])
+        _ed = st.data_editor(
+            _tab, hide_index=True, width="stretch", key="ed_exec",
+            column_config={
+                "id": None,
+                "Executei": st.column_config.CheckboxColumn(
+                    "Executei", help="Marque as entradas que você realmente operou.",
+                    width="small"),
+            },
+            disabled=["Quando", "Ativo", "Direção", "TF", "Estratégias", "Resultado"])
+        _mudou = False
+        _mapa = dict(zip(_ed["id"], _ed["Executei"]))
+        for h in hist:
+            k = f'{h["asset"]}|{h["dir"]}|{h.get("ck")}|{h.get("tf")}'
+            if k in _mapa and bool(h.get("exec", False)) != bool(_mapa[k]):
+                h["exec"] = bool(_mapa[k]); _mudou = True
+        if _mudou:
+            hist_save(hist)
+            st.rerun()
+
+        _exec = [h for h in vis if h.get("exec")
+                 and h["res"] in ("ganhou", "perdeu")]
+        if _exec:
+            _we = sum(1 for h in _exec if h["res"] == "ganhou")
+            _pe, _loe, _hie = wilson_ci(_we, len(_exec))
+            _ve = verdict(_we, len(_exec), PAYOUT)
+            _tv = {"acima": "acima do breakeven", "abaixo": "abaixo do breakeven",
+                   "inconclusivo": "não conclusivo", "sem dados": "sem dados"}[_ve]
+            st.markdown(
+                f'<div class="note"><b>Só o que você executou:</b> '
+                f'{_we}/{len(_exec)} = <b>{_pe*100:.1f}%</b> · IC95 '
+                f'{_loe*100:.0f}–{_hie*100:.0f}% · {_tv}. Esta é a medida da sua '
+                f'operação; a taxa geral acima inclui sinais que você não pegou.</div>',
+                unsafe_allow_html=True)
 
     st.markdown('<div class="sect">Backup e importação</div>', unsafe_allow_html=True)
     b1, b2, b3 = st.columns([1, 1.4, 1])
