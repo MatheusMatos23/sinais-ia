@@ -155,14 +155,15 @@ hr{border-color:var(--line)}
 /* ---------- CONTROLES ---------- */
 .lbl{font-size:.58rem;letter-spacing:.14em;color:var(--mut);font-weight:600;
   text-transform:uppercase;margin-bottom:7px}
-div[role="radiogroup"]{gap:0!important;background:var(--surf);border:1px solid var(--line);
-  border-radius:10px;padding:3px;display:inline-flex}
-div[role="radiogroup"] label{background:transparent!important;border:0!important;margin:0!important;
-  padding:6px 16px!important;border-radius:7px;font-weight:600;font-size:.8rem;color:var(--mut);
-  transition:all .15s}
-div[role="radiogroup"] label:hover{color:var(--ink2)}
-div[role="radiogroup"] label[data-baseweb="radio"]:has(input:checked){background:var(--surf2)!important;color:var(--ink)!important}
-div[role="radiogroup"] label div:first-child{display:none!important}
+div[role="radiogroup"]{gap:4px!important;background:var(--surf);border:1px solid var(--line);
+  border-radius:10px;padding:4px;display:inline-flex;align-items:center}
+div[role="radiogroup"] label{background:transparent;border:0;margin:0;
+  padding:6px 14px;border-radius:7px;font-weight:600;font-size:.8rem;
+  transition:background .15s;cursor:pointer}
+div[role="radiogroup"] label:hover{background:rgba(255,255,255,.04)}
+div[role="radiogroup"] label:has(input:checked){background:var(--surf2)}
+div[role="radiogroup"] [data-testid="stMarkdownContainer"] p{font-size:.8rem!important;
+  font-weight:600!important;margin:0!important}
 .stMultiSelect div[data-baseweb="select"]>div{background:var(--surf);border:1px solid var(--line);
   border-radius:10px;min-height:42px}
 .stMultiSelect [data-baseweb="tag"]{background:var(--surf2)!important;border:1px solid var(--line2)!important;
