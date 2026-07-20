@@ -760,12 +760,17 @@ div[data-testid="stMetricValue"]{font-family:'IBM Plex Mono',monospace;font-size
 /* com 4+ estratégias a caixa do meio cresce; ancorando tudo no topo, as colunas
    vizinhas não são empurradas para o meio da altura */
 [data-testid="stHorizontalBlock"]:has(.lbl) [data-testid="stSelectSlider"]{padding-top:10px}
-.stMultiSelect [data-baseweb="select"]>div{flex-wrap:wrap;align-items:flex-start;
-  padding-top:5px;padding-bottom:5px}
+/* ESCOPO NA BARRA DE CONTROLES. Estas regras existem por causa dos chips que
+   quebram em várias linhas — situação que só acontece lá. Aplicadas de forma
+   global, o `align-items:flex-start` empurrava o texto de placeholder dos
+   filtros do Histórico para cima e ele saía cortado no topo da caixa. */
+[data-testid="stHorizontalBlock"]:has(.lbl) .stMultiSelect [data-baseweb="select"]>div{
+  flex-wrap:wrap;align-items:flex-start;padding-top:5px;padding-bottom:5px}
 /* o "limpar" e a seta ficavam boiando no meio vertical quando havia 4+ chips */
-.stMultiSelect [data-baseweb="select"]>div>div:last-child{align-self:flex-start;
-  padding-top:3px}
-.stMultiSelect [data-baseweb="tag"]{margin:2px 3px 2px 0!important}
+[data-testid="stHorizontalBlock"]:has(.lbl) .stMultiSelect
+  [data-baseweb="select"]>div>div:last-child{align-self:flex-start;padding-top:3px}
+[data-testid="stHorizontalBlock"]:has(.lbl) .stMultiSelect
+  [data-baseweb="tag"]{margin:2px 3px 2px 0!important}
 @media(max-width:900px){.hero{grid-template-columns:1fr}.hero-side{border-left:0;border-top:1px solid var(--line)}}
 
 /* ---------- ACABAMENTO ---------- */
