@@ -11,7 +11,10 @@ O mesmo código (strategies.py) roda ao vivo e no backtest.
 Regra: entrada na ABERTURA da vela seguinte; acerto pela COR da vela.
 """
 from __future__ import annotations
+import io
+import json
 import math
+import os
 import socket
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
@@ -98,6 +101,15 @@ def active_sessions(d):
 
 def pair_open(a, d):
     return True if a["type"] == "crypto" else any(CUR_SESS.get(c) in set(active_sessions(d)) for c in a["cur"])
+
+
+def sess_window_br(nome):
+    """Janela da sessão convertida para horário de Brasília (ex.: '04:00 – 13:00')."""
+    s, e = SESSIONS[nome]
+    hoje = datetime.now(timezone.utc).date()
+    ini = hm(pd.Timestamp(datetime(hoje.year, hoje.month, hoje.day, s, 0, tzinfo=timezone.utc)))
+    fim = hm(pd.Timestamp(datetime(hoje.year, hoje.month, hoje.day, e, 0, tzinfo=timezone.utc)))
+    return f"{ini} – {fim}"
 
 
 def candle_key(m):
@@ -334,6 +346,17 @@ with st.expander("Mais opções — filtros, áudio, payout e atualização"):
         payout_lbl = st.radio("Payout da corretora", ["80%", "90%"], index=0, horizontal=True)
         auto_on = st.toggle("Atualização automática", value=True)
         every = st.slider("Intervalo (s)", 10, 60, 15, step=5, disabled=not auto_on)
+    st.markdown("**Sessões do mercado — horário de Brasília**")
+    ativas = set(active_sessions(datetime.now(timezone.utc)))
+    BADGE = '<span class="verd v-good">ativa</span>'
+    linhas = ""
+    for n in SESSIONS:
+        marca = BADGE if n in ativas else ""
+        linhas += (f'<tr><td class="nm">{n} {marca}</td>'
+                   f'<td class="mono n">{sess_window_br(n)}</td></tr>')
+    st.markdown(f'<table class="tbl" style="max-width:420px">'
+                f'<tr><th>Sessão</th><th>Janela (BRT)</th></tr>{linhas}</table>',
+                unsafe_allow_html=True)
 PAYOUT = 0.80 if payout_lbl == "80%" else 0.90
 BE = breakeven(PAYOUT) * 100
 
@@ -407,8 +430,8 @@ perf = pc[pk]
 # ============================== TOPBAR ==============================
 if market_open(now):
     stat = '<span class="dotstat"><i></i>Mercado aberto</span>'
-    sess = "".join(f'<span class="sess-tag">{s}</span>' for s in active_sessions(now)) or \
-           '<span class="sess-tag">—</span>'
+    sess = "".join(f'<span class="sess-tag" title="{s}: {sess_window_br(s)} (Brasília)">{s}</span>'
+                   for s in active_sessions(now)) or '<span class="sess-tag">—</span>'
 else:
     stat = '<span class="dotstat off"><i></i>Forex fechado</span>'
     sess = '<span class="sess-tag">fim de semana · cripto 24/7</span>'
@@ -458,21 +481,66 @@ def _short(nm):
     return nm.split("·")[0].strip()
 
 
+# ---------- persistência do histórico ----------
+HIST_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hist_signals.json")
+
+
+def hist_load():
+    """Carrega do disco na primeira execução da sessão."""
+    if "hist" in st.session_state:
+        return st.session_state["hist"]
+    h = []
+    try:
+        if os.path.exists(HIST_PATH):
+            with open(HIST_PATH, "r", encoding="utf-8") as f:
+                for r in json.load(f):
+                    r["ts"] = pd.Timestamp(r["ts"])
+                    h.append(r)
+    except Exception:
+        h = []
+    st.session_state["hist"] = h
+    return h
+
+
+def hist_save(h):
+    try:
+        out = [{**r, "ts": pd.Timestamp(r["ts"]).isoformat()} for r in h]
+        with open(HIST_PATH, "w", encoding="utf-8") as f:
+            json.dump(out, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def hist_df(h):
+    if not h:
+        return pd.DataFrame()
+    return pd.DataFrame([{
+        "data_hora_brasilia": dhm(r["ts"]), "utc": pd.Timestamp(r["ts"]).isoformat(),
+        "ativo": r["asset"], "direcao": r["dir"], "forca": FL.get(r["force"], r["force"]),
+        "estrategias": "+".join(r["strats"]), "timeframe_min": r.get("tf", ""),
+        "resultado": r["res"] or "aguardando",
+    } for r in sorted(h, key=lambda x: x["ts"], reverse=True)])
+
+
 # ---------- registra os sinais emitidos e apura o resultado pela cor da vela ----------
 def record_and_resolve(entries, data, minutes):
-    hist = st.session_state.setdefault("hist", [])
+    hist = hist_load()
     ck = candle_key(minutes)
     start = pd.Timestamp(ck * minutes * 60, unit="s")     # abertura da vela da entrada
-    seen = {(h["asset"], h["dir"], h["ck"]) for h in hist}
+    seen = {(h["asset"], h["dir"], h["ck"], h.get("tf")) for h in hist}
+    changed = False
     for e in entries:
-        k = (e["a"]["name"], e["dir"], ck)
+        k = (e["a"]["name"], e["dir"], ck, minutes)
         if k not in seen:
             hist.append({"ck": ck, "ts": start, "asset": e["a"]["name"], "dir": e["dir"],
                          "force": e["force"], "strats": [_short(s) for s in e["strats"]],
-                         "res": None})
+                         "tf": minutes, "res": None})
             seen.add(k)
+            changed = True
     for h in hist:                                        # apura o que já fechou
         if h["res"] is not None:
+            continue
+        if h.get("tf") not in (None, minutes):            # só apura o timeframe atual
             continue
         df = data.get(h["asset"])
         if df is None or len(df) == 0:
@@ -486,8 +554,11 @@ def record_and_resolve(entries, data, minutes):
             else:
                 venceu = (cl > op) == (h["dir"] == "COMPRA")
                 h["res"] = "ganhou" if venceu else "perdeu"
-    if len(hist) > 300:
-        del hist[:len(hist) - 300]
+            changed = True
+    if len(hist) > 3000:
+        del hist[:len(hist) - 3000]
+    if changed:
+        hist_save(hist)
     return hist
 
 
@@ -698,7 +769,53 @@ with tab_hist:
         st.markdown('<div class="note"><b>Este é o teste que vale.</b> Aqui não há backtest nem '
                     'seleção de período: são os sinais que o app realmente emitiu, apurados pela '
                     'cor da vela em que a entrada valeria. É a amostra mais honesta que existe — '
-                    'e a única livre de garimpo de dados. O histórico é da <b>sessão do navegador</b>: '
-                    'ao recarregar a página, ele reinicia.</div>', unsafe_allow_html=True)
+                    'e a única livre de garimpo de dados.</div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="sect">Backup e importação</div>', unsafe_allow_html=True)
+    b1, b2, b3 = st.columns([1, 1.4, 1])
+    with b1:
+        df_h = hist_df(hist)
+        st.download_button("Baixar histórico (CSV)",
+                           data=(df_h.to_csv(index=False).encode("utf-8-sig") if not df_h.empty
+                                 else "sem dados".encode()),
+                           file_name=f"sinais_historico_{br(now).strftime('%Y%m%d_%H%M')}.csv",
+                           mime="text/csv", disabled=df_h.empty, use_container_width=True)
+    with b2:
+        up = st.file_uploader("Importar CSV salvo antes (mescla sem duplicar)",
+                              type=["csv"], label_visibility="collapsed")
+        if up is not None:
+            try:
+                imp = pd.read_csv(up)
+                cur = hist_load()
+                seen = {(r["asset"], r["dir"], r["ck"], r.get("tf")) for r in cur}
+                add = 0
+                for _, r in imp.iterrows():
+                    ts = pd.Timestamp(r["utc"])
+                    tf = int(r.get("timeframe_min") or 0) or None
+                    ckk = int(ts.timestamp() // 60 // (tf or 5))
+                    key = (r["ativo"], r["direcao"], ckk, tf)
+                    if key in seen:
+                        continue
+                    inv = {v: k for k, v in FL.items()}
+                    cur.append({"ck": ckk, "ts": ts, "asset": r["ativo"], "dir": r["direcao"],
+                                "force": inv.get(r["forca"], "FRACA"),
+                                "strats": str(r["estrategias"]).split("+"), "tf": tf,
+                                "res": None if r["resultado"] == "aguardando" else r["resultado"]})
+                    seen.add(key); add += 1
+                hist_save(cur)
+                st.success(f"{add} registro(s) importado(s).")
+            except Exception as ex:
+                st.error(f"Não consegui ler o CSV: {ex}")
+    with b3:
+        if st.button("Limpar histórico", use_container_width=True):
+            st.session_state["hist"] = []
+            hist_save([])
+            st.rerun()
+    st.markdown('<div class="note">O histórico é gravado em arquivo no servidor, então '
+                '<b>sobrevive a recarregar a página</b>. Mas o disco do Streamlit Cloud é '
+                '<b>efêmero</b>: quando o app hiberna por inatividade ou recebe uma atualização, '
+                'ele é zerado. Para acumular semanas de dados de verdade, <b>baixe o CSV</b> de '
+                'vez em quando e reimporte — o backup no seu computador é o que dura.</div>',
+                unsafe_allow_html=True)
 
 st.markdown('<div class="foot">Uso próprio · não é recomendação financeira</div>', unsafe_allow_html=True)
