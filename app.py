@@ -903,6 +903,27 @@ with cc2:
                                 label_visibility="collapsed")
     if not sel_strats:
         sel_strats = default_sel or [list(STRATEGIES)[0]]
+
+    # Com 4+ estratégias os chips quebravam em duas linhas e esticavam a barra.
+    # A partir do 4º ficam recolhidos atrás de um "+N"; passar o mouse ou focar
+    # o campo mostra todos de novo. O seletor segue a estrutura real do BaseWeb:
+    # select > div > (contêiner das tags) + (limpar/seta).
+    _extra = len(sel_strats) - 3
+    if _extra > 0:
+        _TAGS = '.stMultiSelect [data-baseweb="select"]>div>div:first-child'
+        st.markdown(f"""<style>
+        {_TAGS}>[data-baseweb="tag"]:nth-child(n+4){{display:none}}
+        {_TAGS}::after{{content:"+{_extra}";display:inline-flex;align-items:center;
+          height:24px;padding:0 9px;margin:2px 0;border-radius:7px;
+          font-family:'Inter',sans-serif;font-size:.7rem;font-weight:600;
+          color:var(--mut);background:var(--surf2);border:1px solid var(--line2);
+          cursor:default}}
+        .stMultiSelect:hover {_TAGS}>[data-baseweb="tag"]:nth-child(n+4),
+        .stMultiSelect:focus-within {_TAGS}>[data-baseweb="tag"]:nth-child(n+4){{
+          display:inline-flex}}
+        .stMultiSelect:hover {_TAGS}::after,
+        .stMultiSelect:focus-within {_TAGS}::after{{content:""; display:none}}
+        </style>""", unsafe_allow_html=True)
 with cc3:
     st.markdown('<div class="lbl">Força mínima</div>', unsafe_allow_html=True)
     min_force = st.select_slider("fm", options=["FRACA", "MÉDIA", "FORTE"], value="FRACA",
