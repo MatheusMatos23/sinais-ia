@@ -439,6 +439,13 @@ st.markdown("""
   --line2:rgba(255,255,255,.11); --ink:#E9EDF5; --ink2:#B6C0D4; --mut:#6F7B93;
   --buy:#00C88A; --buy-dim:rgba(0,200,138,.10); --sell:#FF4A63; --sell-dim:rgba(255,74,99,.09);
   --warn:#D9A441; --r:12px; --r2:16px;
+  /* ---- ESCALA DE ESPAÇAMENTO ----
+     Antes cada cartão tinha o seu: paddings de 11/13/14/16/18/22px e margens de
+     8/16/18/30/34/38. Agora tudo sai daqui, então nada mais destoa por acidente. */
+  --pad-card:16px 20px;   /* preenchimento interno de TODO cartão */
+  --gap-bloco:14px;       /* respiro entre um bloco e o seguinte */
+  --gap-curto:6px;        /* entre um bloco e sua legenda/complemento */
+  --gap-secao:26px;       /* antes de um título de seção */
 }
 .stApp{background:var(--bg);color:var(--ink);
   font-family:'Inter',-apple-system,sans-serif;-webkit-font-smoothing:antialiased;}
@@ -451,7 +458,7 @@ hr{border-color:var(--line)}
 .hdr{display:flex;align-items:center;justify-content:space-between;gap:22px;
   background:linear-gradient(180deg,rgba(255,255,255,.028),transparent 60%),var(--surf);
   border:1px solid var(--line);border-radius:var(--r2);
-  padding:14px 20px;margin-bottom:16px}
+  padding:var(--pad-card);margin-bottom:var(--gap-bloco)}
 .hdr-l{display:flex;align-items:center;gap:22px;flex-wrap:wrap}
 /* ---- marca ---- */
 .brand{display:flex;align-items:center;gap:11px}
@@ -557,7 +564,7 @@ div[data-testid="stExpander"] summary:hover{color:var(--ink)}
   background:var(--buy-dim);color:var(--buy);border:1px solid rgba(0,200,138,.28)}
 
 /* ---------- SEÇÃO / GRADE ---------- */
-.sect{margin:30px 0 14px;font-size:.6rem;font-weight:600;letter-spacing:.16em;color:var(--mut);
+.sect{margin:var(--gap-secao) 0 10px;font-size:.6rem;font-weight:600;letter-spacing:.16em;color:var(--mut);
   text-transform:uppercase;display:flex;align-items:center;gap:10px}
 .sect:after{content:"";flex:1;height:1px;background:var(--line)}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(215px,1fr));gap:12px}
@@ -600,10 +607,10 @@ div[data-testid="stExpander"] summary:hover{color:var(--ink)}
 .tbl tr:has(.v-faint) .nm{color:var(--ink2);font-weight:500}
 
 /* ---------- CARTÕES DE NÚMERO (topo do Histórico) ---------- */
-.statrow{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;
-  margin:18px 0 6px}
+.statrow{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;
+  margin:var(--gap-bloco) 0 var(--gap-curto)}
 .stat{background:var(--surf);border:1px solid var(--line);border-radius:var(--r);
-  padding:14px 16px;display:flex;flex-direction:column;gap:5px;min-width:0}
+  padding:var(--pad-card);display:flex;flex-direction:column;gap:5px;min-width:0}
 .stat .k{font-size:.58rem;letter-spacing:.14em;text-transform:uppercase;
   color:var(--mut);font-weight:600}
 .stat .v{font-family:'IBM Plex Mono',monospace;font-size:1.6rem;font-weight:600;
@@ -613,7 +620,7 @@ div[data-testid="stExpander"] summary:hover{color:var(--ink)}
 /* ---------- BARRA DE RESUMO (topo do Desempenho) ---------- */
 .sumbar{display:flex;align-items:center;justify-content:space-between;gap:24px;flex-wrap:wrap;
   background:var(--surf);border:1px solid var(--line);border-left:3px solid var(--line2);
-  border-radius:var(--r);padding:16px 20px;margin:18px 0 4px}
+  border-radius:var(--r);padding:var(--pad-card);margin:var(--gap-bloco) 0 var(--gap-curto)}
 .sumbar.good{border-left-color:var(--buy)}
 .sumbar.mid{border-left-color:var(--warn)}
 .sumbar .s-main{font-size:.92rem;color:var(--ink2);line-height:1.5}
@@ -626,20 +633,20 @@ div[data-testid="stExpander"] summary:hover{color:var(--ink)}
   color:var(--ink);font-weight:600;letter-spacing:0;text-transform:none}
 .tagmini{font-size:.54rem;font-weight:600;letter-spacing:.06em;padding:2px 6px;border-radius:5px;
   background:var(--surf2);color:var(--mut);border:1px solid var(--line);margin-left:7px}
-.note{margin-top:18px;font-size:.72rem;color:var(--mut);border-left:2px solid var(--line2);
+.note{margin-top:var(--gap-bloco);font-size:.72rem;color:var(--mut);border-left:2px solid var(--line2);
   padding:2px 0 2px 14px;line-height:1.65}
 .note b{color:var(--ink2);font-weight:600}
-.foot{margin-top:34px;padding-top:18px;border-top:1px solid var(--line);text-align:center;
+.foot{margin-top:var(--gap-secao);padding-top:18px;border-top:1px solid var(--line);text-align:center;
   font-size:.64rem;color:#4E5872}
 div[data-testid="stMetric"]{background:var(--surf);border:1px solid var(--line);
-  border-radius:var(--r);padding:14px 16px}
+  border-radius:var(--r);padding:var(--pad-card)}
 div[data-testid="stMetricLabel"] p{font-size:.58rem!important;letter-spacing:.14em;
   text-transform:uppercase;color:var(--mut)!important;font-weight:600!important}
 div[data-testid="stMetricValue"]{font-family:'IBM Plex Mono',monospace;font-size:1.3rem;
   font-variant-numeric:tabular-nums}
 /* ---------- janela de entrada / alertas ---------- */
-.win{display:flex;align-items:center;gap:10px;border-radius:10px;padding:11px 16px;
-  font-size:.82rem;color:var(--ink2);margin:16px 0 4px;border:1px solid var(--line)}
+.win{display:flex;align-items:center;gap:10px;border-radius:10px;padding:12px 20px;
+  font-size:.82rem;color:var(--ink2);margin:var(--gap-bloco) 0 var(--gap-curto);border:1px solid var(--line)}
 .win .pt{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
 .win b{color:var(--ink);font-weight:600}
 .win.ok{background:var(--buy-dim);border-color:rgba(0,200,138,.28)}
@@ -653,7 +660,7 @@ div[data-testid="stMetricValue"]{font-family:'IBM Plex Mono',monospace;font-size
 .hero.stale,.card.stale{opacity:.42;filter:saturate(.55)}
 .hero.stale{border-color:var(--line)}
 /* ---------- DIAGNÓSTICO DE DADOS (chips, não log de terminal) ---------- */
-.diag{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:8px 0 4px}
+.diag{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:var(--gap-bloco) 0 var(--gap-curto)}
 .chip{display:inline-flex;align-items:center;gap:6px;font-size:.68rem;font-weight:500;
   color:var(--ink2);background:var(--surf2);border:1px solid var(--line);
   border-radius:999px;padding:4px 11px;line-height:1.3}
@@ -686,10 +693,16 @@ div[data-testid="stMetricValue"]{font-family:'IBM Plex Mono',monospace;font-size
 
 /* Abas fixas: em tabelas longas as abas saíam da tela e não dava para voltar
    sem rolar tudo de novo. */
+/* A lista de abas vem com `overflow:auto hidden` do Streamlit (rolagem
+   horizontal). Isso CORTA a pílula na vertical e a linha do sticky passava
+   rente à base dela — daí a impressão de sobreposição. Com 3 abas não há o que
+   rolar, então libero o overflow e dou respiro entre a pílula e a linha. */
 [data-testid="stTabs"] [role="tablist"]{
   position:sticky;top:0;z-index:30;background:var(--bg);
-  box-shadow:0 1px 0 var(--line), 0 8px 12px -10px rgba(0,0,0,.9)}
-[data-testid="stTabs"] [role="tabpanel"]{padding-top:4px}
+  overflow:visible!important;
+  gap:4px;padding:8px 0 12px;
+  box-shadow:0 1px 0 var(--line), 0 10px 14px -12px rgba(0,0,0,.9)}
+[data-testid="stTabs"] [role="tabpanel"]{padding-top:10px}
 
 /* NOTA: já tentei `overflow-anchor:none` aqui e foi um erro. A ancoragem é
    justamente o mecanismo do navegador que SEGURA a posição quando algo acima
@@ -716,8 +729,10 @@ div[data-testid="stMetricValue"]{font-family:'IBM Plex Mono',monospace;font-size
 @media(max-width:900px){.hero{grid-template-columns:1fr}.hero-side{border-left:0;border-top:1px solid var(--line)}}
 
 /* ---------- ACABAMENTO ---------- */
-/* Abas: pílulas em vez de sublinhado solto; a ativa ganha corpo. */
-[data-testid="stTabs"] [role="tablist"]{gap:4px;padding:6px 0 0}
+/* Abas: pílulas em vez de sublinhado solto; a ativa ganha corpo.
+   (O gap e o padding da lista ficam SÓ na regra do sticky, mais acima. Havia
+   uma segunda declaração aqui que sobrescrevia o padding e colava a pílula na
+   linha de baixo — era a "sobreposição" que aparecia na tela.) */
 [data-testid="stTabs"] [role="tab"]{border-radius:9px;padding:7px 15px!important;
   color:var(--mut);font-weight:600;font-size:.83rem;transition:color .15s,background .15s}
 [data-testid="stTabs"] [role="tab"]:hover{color:var(--ink2);background:rgba(255,255,255,.035)}
@@ -727,7 +742,7 @@ div[data-testid="stMetricValue"]{font-family:'IBM Plex Mono',monospace;font-size
 
 /* Tabelas: cabeçalho fixo ao rolar, zebra sutil e linha destacada no hover. */
 .tbl{border-collapse:separate;border-spacing:0}
-.tbl th{position:sticky;top:52px;z-index:9;background:var(--bg);
+.tbl th{position:sticky;top:60px;z-index:9;background:var(--bg);
   backdrop-filter:blur(6px);box-shadow:0 1px 0 var(--line)}
 .tbl tbody tr:hover td,.tbl tr:hover td{background:rgba(255,255,255,.022)}
 .tbl tr.on:hover td{background:rgba(0,200,138,.06)}
@@ -747,12 +762,12 @@ div[data-testid="stExpander"] summary{font-size:.82rem;font-weight:600;color:var
 div[data-testid="stExpander"] summary:hover{color:var(--ink)}
 
 /* Rodapé discreto. */
-.foot{margin:38px 0 8px;text-align:center;font-size:.66rem;color:var(--mut);
+.foot{margin:var(--gap-secao) 0 8px;text-align:center;font-size:.66rem;color:var(--mut);
   border-top:1px solid var(--line);padding-top:16px}
 
 /* Estado vazio do scanner: compacto, é o estado mais comum do app. */
 .empty{display:flex;align-items:center;gap:18px;background:var(--surf);
-  border:1px solid var(--line);border-radius:var(--r2);padding:18px 22px}
+  border:1px solid var(--line);border-radius:var(--r2);padding:var(--pad-card)}
 .empty .e-ico{width:42px;height:42px;flex:none;border-radius:12px;display:flex;
   align-items:center;justify-content:center;background:var(--surf2);
   border:1px solid var(--line);color:var(--mut)}
@@ -768,10 +783,19 @@ div[data-testid="stExpander"] summary:hover{color:var(--ink)}
 /* ---------- RITMO VERTICAL ----------
    Havia vãos de 40-60px entre blocos que não separavam nada: o cartão de
    controles, o expander e o contador são um grupo só. */
-div[data-testid="stExpander"]{margin:2px 0 6px}
+div[data-testid="stExpander"]{margin:2px 0 var(--gap-curto)}
 [data-testid="stTabs"]{margin-top:10px}
 .block-container{padding-top:1.1rem}
-[data-testid="stCaptionContainer"] p{font-size:.72rem!important;color:var(--mut)!important}
+/* Legendas do Streamlit (st.caption) apareciam ora coladas, ora com 20px de
+   distância do bloco acima. Passam a usar o mesmo respiro curto de todo o app. */
+[data-testid="stCaptionContainer"]{margin-top:var(--gap-curto)!important;
+  margin-bottom:var(--gap-bloco)!important}
+[data-testid="stCaptionContainer"] p{font-size:.72rem!important;color:var(--mut)!important;
+  line-height:1.5!important;margin:0!important}
+/* Tabela é um bloco como qualquer outro: mesma distância do que vem antes/depois */
+.tbl{margin-bottom:var(--gap-bloco)}
+/* Dois títulos de seção seguidos não precisam do respiro cheio duas vezes */
+.sect:first-child{margin-top:var(--gap-curto)}
 @media(max-width:820px){
   .empty{flex-wrap:wrap}.empty .e-side{margin-left:0}
   .sumbar .s-side{gap:16px}
