@@ -577,8 +577,32 @@ div[data-testid="stMetricValue"]{font-family:'IBM Plex Mono',monospace;font-size
 .chip.warn{border-color:rgba(217,164,65,.35);background:rgba(217,164,65,.08)}
 .chip.warn .cv{color:var(--warn)}
 /* remove o vão que o iframe do contador cria */
-div[data-testid="element-container"]:has(iframe){margin-top:-8px;margin-bottom:-12px}
-div[data-testid="element-container"] iframe{display:block}
+/* ---------- SCROLL E IFRAMES ----------
+   O Streamlit renderiza cada widget num [data-testid="stElementContainer"].
+   (O testid antigo era "element-container"; a regra que usava esse nome estava
+   morta há tempos — por isso os ajustes de margem não faziam efeito.)
+
+   Dois problemas reais que quebravam a rolagem:
+   1. O componente de auto-refresh é um iframe de altura 0, mas o container dele
+      ocupa 26px de largura total e captura a roda do mouse.
+   2. O iframe do contador (58px, largura total) também engole a roda: passando
+      o cursor sobre ele, a página simplesmente não rola. */
+[data-testid="stElementContainer"]:has(> iframe[title^="streamlit_autorefresh"]){
+  display:none !important;
+}
+[data-testid="stElementContainer"]:has(.wheel-pass){display:none !important}
+[data-testid="stElementContainer"]:has(.wheel-pass) + [data-testid="stElementContainer"] iframe{
+  pointer-events:none;              /* contador é só visual: deixa a roda passar */
+}
+[data-testid="stElementContainer"]:has(> iframe[title="st.iframe"]){margin:-2px 0 -6px}
+[data-testid="stElementContainer"] iframe{display:block}
+
+/* Abas fixas: em tabelas longas as abas saíam da tela e não dava para voltar
+   sem rolar tudo de novo. */
+[data-testid="stTabs"] [role="tablist"]{
+  position:sticky;top:0;z-index:30;background:var(--bg);
+  box-shadow:0 1px 0 var(--line), 0 8px 12px -10px rgba(0,0,0,.9)}
+[data-testid="stTabs"] [role="tabpanel"]{padding-top:4px}
 div[data-testid="stExpander"]{margin-bottom:4px}
 @media(max-width:900px){.hero{grid-template-columns:1fr}.hero-side{border-left:0;border-top:1px solid var(--line)}}
 </style>
@@ -829,6 +853,8 @@ topbar_slot.markdown(f"""
   </div>
 </div>""", unsafe_allow_html=True)
 
+# marcador invisível: o CSS usa o irmão seguinte para liberar a roda do mouse
+st.markdown('<div class="wheel-pass"></div>', unsafe_allow_html=True)
 html_box(f"""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@500;600&family=IBM+Plex+Mono:wght@600&display=swap');
