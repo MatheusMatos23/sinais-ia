@@ -165,6 +165,12 @@ st.markdown("""
 .card.buy .b.on{background:linear-gradient(90deg,#00f5b0,#22d3ee)}
 .card.sell .b.on{background:linear-gradient(90deg,#ff3b6b,#ff008c)}
 .cb .lab{margin-left:6px;font-size:.62rem;letter-spacing:1.5px;font-weight:800;color:#9aa8cc}
+.strats{margin-top:10px;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.sc{font-size:.64rem;font-weight:700;letter-spacing:.5px;padding:4px 10px;border-radius:999px;
+ background:rgba(255,255,255,.06);color:#c3cee9;border:1px solid rgba(255,255,255,.12)}
+.sc.mini{font-size:.6rem;padding:3px 8px}
+.conf{font-size:.6rem;font-weight:800;letter-spacing:1.2px;padding:4px 10px;border-radius:999px;
+ background:rgba(0,245,176,.16);color:#7ef7d6;border:1px solid rgba(0,245,176,.38)}
 /* tabela de desempenho */
 .perf{width:100%;border-collapse:separate;border-spacing:0 8px;font-size:.86rem}
 .perf th{text-align:left;font-size:.66rem;letter-spacing:1.6px;color:#8496bd;font-weight:800;padding:0 14px}
@@ -205,6 +211,10 @@ with st.sidebar:
     BE = breakeven(PAYOUT) * 100
     st.caption(f"Breakeven com payout {payout_lbl}: **{BE:.2f}%**. "
                "O painel só afirma vantagem se todo o intervalo ficar acima disso.")
+    st.divider()
+    audio_on = st.toggle("🔊 Aviso por voz na entrada", value=False)
+    st.caption("O navegador só libera áudio depois de um clique na página — "
+               "use o botão de teste que aparece quando você liga isto.")
 
 st.markdown('<div class="brand"><span class="logo">⚡</span><span class="name">Sinais IA</span>'
             '<span class="live">MULTI-ESTRATÉGIA</span></div>', unsafe_allow_html=True)
@@ -215,7 +225,13 @@ with c1:
                         label_visibility="collapsed")
     TF = {"1 min": "1", "5 min": "5", "15 min": "15"}[tf_label]
 with c2:
-    strat_name = st.selectbox("Estratégia", list(STRATEGIES), index=0, label_visibility="collapsed")
+    default_sel = [k for k in ("G · Fade vela extrema", "J · Z-score forte", "K · Reversão dupla")
+                   if k in STRATEGIES]
+    sel_strats = st.multiselect("Estratégias", list(STRATEGIES), default=default_sel,
+                                label_visibility="collapsed",
+                                placeholder="Escolha uma ou mais estratégias")
+if not sel_strats:
+    sel_strats = default_sel or [list(STRATEGIES)[0]]
 
 st_autorefresh(interval=15000, key="auto")
 now = datetime.now(timezone.utc)
@@ -225,20 +241,33 @@ open_assets = [a for a in ASSETS if pair_open(a, now)]
 scan_list = ASSETS if show_closed else open_assets
 data = get_data(scan_list, interval, minutes)
 
-# ---------------- scanner da estratégia escolhida ----------------
-entries = []
+# ---------------- scanner: TODAS as estratégias selecionadas ----------------
+# Agrupa por (ativo, direção): se mais de uma estratégia aponta o mesmo lado,
+# isso é confluência e sobe no ranking.
+FORCE_ORDER = {"FRACA": 1, "MEDIA": 2, "FORTE": 3}
+agg = {}
 for a in scan_list:
     df = data.get(a["name"])
     if df is None or len(df) < 60:
         continue
     closed = df.iloc[:-1]                      # descarta a vela em formação
     d = add_indicators(closed)
-    sc = score_of(strat_name, d, interval)
-    last = float(sc.iloc[-1]) if len(sc) else 0.0
-    r = classify(last)
-    if r:
-        entries.append({"a": a, "dir": r[0], "force": r[1], "score": abs(last)})
-entries.sort(key=lambda e: e["score"], reverse=True)
+    for nm in sel_strats:
+        sc = score_of(nm, d, interval)
+        last = float(sc.iloc[-1]) if len(sc) else 0.0
+        r = classify(last)
+        if not r:
+            continue
+        key = (a["name"], r[0])
+        e = agg.setdefault(key, {"a": a, "dir": r[0], "force": r[1],
+                                 "score": abs(last), "strats": []})
+        e["strats"].append(nm)
+        e["score"] = max(e["score"], abs(last))
+        if FORCE_ORDER[r[1]] > FORCE_ORDER[e["force"]]:
+            e["force"] = r[1]
+entries = list(agg.values())
+# ranking: mais estratégias concordando primeiro, depois força, depois score
+entries.sort(key=lambda e: (len(e["strats"]), FORCE_ORDER[e["force"]], e["score"]), reverse=True)
 
 # ---------------- backtest das 4 estratégias (hoje / período) ----------------
 def run_perf():
@@ -308,18 +337,33 @@ def bars(f, cls=""):
     return "".join(f'<span class="b {"on" if i < n else ""}"></span>' for i in range(3))
 
 
+def _short(nm):
+    """'G · Fade vela extrema' -> 'G'"""
+    return nm.split("·")[0].strip()
+
+
+def strat_chips(e, big=False):
+    n = len(e["strats"])
+    conf = (f'<span class="conf">{n} ESTRATÉGIAS CONCORDAM</span>' if n > 1 else "")
+    chips = "".join(f'<span class="sc">{_short(s)} · {s.split("·")[1].strip()}</span>'
+                    for s in e["strats"]) if big else \
+            "".join(f'<span class="sc mini">{_short(s)}</span>' for s in e["strats"])
+    return f'<div class="strats">{conf}{chips}</div>'
+
+
 def hero(e):
     cls = "buy" if e["dir"] == "COMPRA" else "sell"
     arw = "▲" if e["dir"] == "COMPRA" else "▼"
     return (f'<div class="hero-sig {cls}"><div class="glow"></div><div class="tag">MELHOR ENTRADA</div>'
             f'<div class="pair">{e["a"]["name"]}</div>'
             f'<div class="dir"><span class="arw">{arw}</span> {e["dir"]}</div>'
-            f'<div class="fbars">{bars(e["force"])}<span class="flabel">FORÇA {FL[e["force"]]}</span></div></div>')
+            f'<div class="fbars">{bars(e["force"])}<span class="flabel">FORÇA {FL[e["force"]]}</span></div>'
+            f'{strat_chips(e, big=True)}</div>')
 
 
-def hero_empty(name):
+def hero_empty(n_sel):
     return ('<div class="hero-sig wait"><div class="glow"></div><div class="tag">SCANNER</div>'
-            f'<div class="pair">{name}</div>'
+            f'<div class="pair">{n_sel} ESTRATÉGIA(S) ATIVA(S)</div>'
             '<div class="dir"><span class="arw">◵</span> NENHUMA ENTRADA</div>'
             '<div class="sub">AGUARDANDO SETUP — PRÓXIMA VELA</div></div>')
 
@@ -329,20 +373,65 @@ def card(e):
     arw = "▲" if e["dir"] == "COMPRA" else "▼"
     return (f'<div class="card {cls}"><div class="p">{e["a"]["name"]}</div>'
             f'<div class="d">{arw} {e["dir"]}</div>'
-            f'<div class="cb">{bars(e["force"])}<span class="lab">{FL[e["force"]]}</span></div></div>')
+            f'<div class="cb">{bars(e["force"])}<span class="lab">{FL[e["force"]]}</span></div>'
+            f'{strat_chips(e)}</div>')
 
 
 if entries:
     st.markdown(hero(entries[0]), unsafe_allow_html=True)
-    st.markdown(f'<div class="gtitle">Outras entradas · {strat_name} · {TF_LABEL[TF]} '
-                f'<small>({len(entries)} no total)</small></div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="gtitle">Outras entradas · {TF_LABEL[TF]} '
+                f'<small>({len(entries)} no total · {len(sel_strats)} estratégia(s) ativa(s))</small></div>',
+                unsafe_allow_html=True)
     if entries[1:]:
         st.markdown(f'<div class="grid">{"".join(card(e) for e in entries[1:])}</div>', unsafe_allow_html=True)
 else:
-    st.markdown(hero_empty(strat_name), unsafe_allow_html=True)
-    st.markdown(f'<div class="gtitle">Sem entrada para <b>{strat_name}</b> agora '
-                '<small>— troque a estratégia ou aguarde a próxima vela</small></div>',
+    st.markdown(hero_empty(len(sel_strats)), unsafe_allow_html=True)
+    st.markdown('<div class="gtitle">Sem entrada nas estratégias selecionadas '
+                '<small>— aguarde a próxima vela ou adicione outra estratégia</small></div>',
                 unsafe_allow_html=True)
+
+# ---------------- aviso por voz (opcional) ----------------
+if audio_on:
+    if entries:
+        top = entries[0]
+        nomes = {"EUR/USD": "Euro Dólar", "GBP/USD": "Libra Dólar", "USD/JPY": "Dólar Iene",
+                 "AUD/USD": "Dólar Australiano", "USD/CAD": "Dólar Canadense",
+                 "USD/CHF": "Dólar Franco", "NZD/USD": "Dólar Neozelandês",
+                 "EUR/JPY": "Euro Iene", "BTC/USD": "Bitcoin", "ETH/USD": "Ethereum"}
+        par = nomes.get(top["a"]["name"], top["a"]["name"])
+        ests = ", ".join(_short(s) for s in top["strats"])
+        plural = "estratégias" if len(top["strats"]) > 1 else "estratégia"
+        fala = (f"Entrada agora. {par}. {top['dir']}. "
+                f"{plural} {ests}. Força {FL[top['force']].lower()}.")
+    else:
+        fala = ""
+    components.html(f"""
+    <div style="font-family:Inter,sans-serif">
+      <button id="unlock" style="background:rgba(0,245,176,.14);color:#7ef7d6;
+        border:1px solid rgba(0,245,176,.35);border-radius:10px;padding:7px 14px;
+        font-weight:700;cursor:pointer;font-size:.78rem">🔊 Ativar / testar voz</button>
+      <span id="st" style="color:#8697bd;font-size:.72rem;margin-left:10px"></span>
+    </div>
+    <script>
+    var TF={int(TF)}, FALA={fala!r};
+    function say(t){{ try{{ var u=new SpeechSynthesisUtterance(t); u.lang='pt-BR'; u.rate=1.05;
+      window.speechSynthesis.cancel(); window.speechSynthesis.speak(u); }}catch(e){{}} }}
+    document.getElementById('unlock').onclick=function(){{
+      sessionStorage.setItem('voz','1'); say('Voz ativada.');
+      document.getElementById('st').textContent='voz ativada';
+    }};
+    if(sessionStorage.getItem('voz')==='1') document.getElementById('st').textContent='voz ativada';
+    // fala uma vez por vela, só nos primeiros 12s (o momento da entrada)
+    (function(){{
+      if(!FALA) return;
+      if(sessionStorage.getItem('voz')!=='1') return;
+      var per=TF*60, now=Date.now()/1000, pos=now%per;
+      var candle=Math.floor(now/per);
+      if(pos<12 && sessionStorage.getItem('ditoEm')!=String(candle)){{
+        sessionStorage.setItem('ditoEm',String(candle)); say(FALA);
+      }}
+    }})();
+    </script>""", height=46)
 
 # ---------------- painel de desempenho ----------------
 VERD_STYLE = {
@@ -380,7 +469,7 @@ for name in STRATEGIES:
     if is_top:
         badge = ('<span class="badge">VANTAGEM COMPROVADA</span>' if top_proven
                  else '<span class="badge neutral">MAIOR TAXA · não comprovada</span>')
-    sel = ' · <span class="n">em uso</span>' if name == strat_name else ""
+    sel = ' · <span class="n">em uso</span>' if name in sel_strats else ""
     rows += (f'<tr class="{"best" if (is_top and top_proven) else ""}">'
              f'<td class="nm">{name}{badge}{sel}</td>'
              f'<td>{wr_cell(*p["hoje"])}</td>'
