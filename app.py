@@ -961,19 +961,25 @@ with cc2:
     # select > div > (contêiner das tags) + (limpar/seta).
     _extra = len(sel_strats) - 3
     if _extra > 0:
-        _TAGS = '.stMultiSelect [data-baseweb="select"]>div>div:first-child'
+        # Escopo obrigatório na barra de controles: sem isso a regra atinge TODOS
+        # os multiselects da página — os filtros do Histórico ganhavam um "+N"
+        # fantasma por cima do texto de placeholder.
+        # Escopo obrigatório na barra de controles: sem isso a regra atinge TODOS
+        # os multiselects da página — os filtros do Histórico ganhavam um "+N"
+        # fantasma por cima do texto de placeholder.
+        _BAR = '[data-testid="stHorizontalBlock"]:has(.lbl) .stMultiSelect'
+        _TAGS = '[data-baseweb="select"]>div>div:first-child'
         st.markdown(f"""<style>
-        {_TAGS}>[data-baseweb="tag"]:nth-child(n+4){{display:none}}
-        {_TAGS}::after{{content:"+{_extra}";display:inline-flex;align-items:center;
+        {_BAR} {_TAGS}>[data-baseweb="tag"]:nth-child(n+4){{display:none}}
+        {_BAR} {_TAGS}::after{{content:"+{_extra}";display:inline-flex;align-items:center;
           height:24px;padding:0 9px;margin:2px 0;border-radius:7px;
           font-family:'Inter',sans-serif;font-size:.7rem;font-weight:600;
           color:var(--mut);background:var(--surf2);border:1px solid var(--line2);
           cursor:default}}
-        .stMultiSelect:hover {_TAGS}>[data-baseweb="tag"]:nth-child(n+4),
-        .stMultiSelect:focus-within {_TAGS}>[data-baseweb="tag"]:nth-child(n+4){{
-          display:inline-flex}}
-        .stMultiSelect:hover {_TAGS}::after,
-        .stMultiSelect:focus-within {_TAGS}::after{{content:""; display:none}}
+        {_BAR}:hover {_TAGS}>[data-baseweb="tag"]:nth-child(n+4),
+        {_BAR}:focus-within {_TAGS}>[data-baseweb="tag"]:nth-child(n+4){{display:inline-flex}}
+        {_BAR}:hover {_TAGS}::after,
+        {_BAR}:focus-within {_TAGS}::after{{display:none}}
         </style>""", unsafe_allow_html=True)
 with cc3:
     st.markdown('<div class="lbl">Força mínima</div>', unsafe_allow_html=True)
@@ -1226,14 +1232,15 @@ topbar_slot.markdown(f"""
     <div class="meta"><span class="k">Horário de Brasília</span>
       <span class="v mono">{br(now).strftime('%H:%M:%S')}</span></div>
     <div class="meta cd-meta"><span class="k">Próxima vela</span>
-      <span class="v mono" id="kairo-cd">--:--</span></div>
+      <span class="v mono" id="kairo-cd">{int(secs_to_next // 60):02d}:{int(secs_to_next % 60):02d}</span></div>
     <span id="kairo-cdbadge"></span>
   </div>
   <a class="focobtn {'on' if foco else ''}" target="_self"
      href="?live={'1' if auto_on else '0'}&foco={'0' if foco else '1'}"
      title="{'Sair do modo foco' if foco else 'Modo foco: esconde controles e abas'}"
      >{'Sair do foco' if foco else 'Foco'}</a>
-  <span class="hdr-prog"><i id="kairo-cdfill"></i></span>
+  <span class="hdr-prog"><i id="kairo-cdfill"
+       style="width:{(_age / _per) * 100:.1f}%"></i></span>
   <a class="livebtn {'on' if auto_on else ''}" target="_self"
      href="?live={'0' if auto_on else '1'}&foco={'1' if foco else '0'}"
      title="{'Pausar a atualização automática para ler as tabelas paradas'
