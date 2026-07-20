@@ -604,12 +604,13 @@ div[data-testid="stMetricValue"]{font-family:'IBM Plex Mono',monospace;font-size
   box-shadow:0 1px 0 var(--line), 0 8px 12px -10px rgba(0,0,0,.9)}
 [data-testid="stTabs"] [role="tabpanel"]{padding-top:4px}
 
-/* Ancoragem de rolagem: o topo da página muda de altura a cada rerun (o texto
-   "já se passaram Xs", as pastilhas de diagnóstico). O navegador tenta
-   compensar mexendo sozinho na posição, e isso vira tremida/salto no meio da
-   leitura das tabelas longas. Desligado. */
-[data-testid="stMain"]{overflow-anchor:none}
-[data-testid="stMain"] *{overflow-anchor:none}
+/* NOTA: já tentei `overflow-anchor:none` aqui e foi um erro. A ancoragem é
+   justamente o mecanismo do navegador que SEGURA a posição quando algo acima
+   muda de altura — desligá-la expõe cada deslocamento em vez de escondê-lo.
+   O caminho certo é não deixar a altura mudar. Por isso o min-height abaixo:
+   a cada rerun o Streamlit recria o iframe do contador, e enquanto ele não
+   carrega o container pode ficar com altura 0, empurrando tudo que vem depois. */
+[data-testid="stElementContainer"]:has(> iframe[title="st.iframe"]){min-height:58px}
 div[data-testid="stExpander"]{margin-bottom:4px}
 @media(max-width:900px){.hero{grid-template-columns:1fr}.hero-side{border-left:0;border-top:1px solid var(--line)}}
 </style>
@@ -618,7 +619,7 @@ div[data-testid="stExpander"]{margin-bottom:4px}
 # ============================== CONTROLES (no corpo da página) ==============================
 topbar_slot = st.empty()          # a barra de status é preenchida depois (precisa dos dados)
 st.markdown('<div class="ctrlbar">', unsafe_allow_html=True)
-cc1, cc2, cc3 = st.columns([1.05, 2.1, 1.05])
+cc1, cc2, cc3, cc4 = st.columns([1.05, 1.85, 0.95, 0.6])
 with cc1:
     st.markdown('<div class="lbl">Timeframe</div>', unsafe_allow_html=True)
     tf_label = st.radio("tf", ["1 min", "5 min", "15 min"], index=1, horizontal=True,
@@ -637,6 +638,14 @@ with cc3:
     st.markdown('<div class="lbl">Força mínima</div>', unsafe_allow_html=True)
     min_force = st.select_slider("fm", options=["FRACA", "MÉDIA", "FORTE"], value="FRACA",
                                  label_visibility="collapsed")
+with cc4:
+    # Enquanto você lê Desempenho ou Histórico, nada precisa se atualizar. Cada
+    # rerun reconstrói a página inteira, e é isso que faz a leitura "pular".
+    # Aqui em cima porque é o controle que resolve o problema na hora.
+    st.markdown('<div class="lbl">Ao vivo</div>', unsafe_allow_html=True)
+    auto_on = st.toggle("Atualizar", value=True, key="auto_on_top",
+                        help="Desligue para ler as tabelas sem a página se refazer "
+                             "a cada poucos segundos.")
 st.markdown('</div>', unsafe_allow_html=True)
 
 with st.expander("Mais opções — filtros, áudio, payout e atualização"):
@@ -653,7 +662,7 @@ with st.expander("Mais opções — filtros, áudio, payout e atualização"):
         st.markdown("**Análise e atualização**")
         payout_lbl = st.radio("Payout padrão da corretora", ["80%", "90%"], index=0,
                               horizontal=True)
-        auto_on = st.toggle("Atualização automática", value=True)
+        st.caption("A chave *Ao vivo* fica na barra de controles, no topo.")
         every = st.slider("Intervalo (s)", 10, 60, 15, step=5, disabled=not auto_on)
     st.markdown("**Payout por ativo** — o breakeven muda com o payout, então vale "
                 "conferir o de cada par na sua corretora. Em branco = usa o padrão.")
