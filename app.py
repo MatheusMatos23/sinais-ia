@@ -16,6 +16,7 @@ import json
 import math
 import os
 import socket
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 
@@ -56,7 +57,8 @@ CUR_SESS = {"AUD": "Sydney", "NZD": "Sydney", "JPY": "Tóquio", "EUR": "Londres"
             "GBP": "Londres", "CHF": "Londres", "USD": "Nova York", "CAD": "Nova York"}
 TF_LABEL = {"1": "1 min", "5": "5 min", "15": "15 min"}
 TF_YF = {"1": "1m", "5": "5m", "15": "15m"}
-TF_PERIOD = {"1m": "7d", "5m": "1mo", "15m": "1mo"}
+TF_PERIOD = {"1m": "7d", "5m": "1mo", "15m": "1mo"}      # janela grande: backtest
+TF_PERIOD_LIVE = {"1m": "1d", "5m": "2d", "15m": "5d"}   # janela curta: sinal ao vivo
 FORCE_ORDER = {"FRACA": 1, "MEDIA": 2, "FORTE": 3}
 FL = {"FRACA": "FRACA", "MEDIA": "MÉDIA", "FORTE": "FORTE"}
 
@@ -116,10 +118,10 @@ def candle_key(m):
     return int(math.floor(datetime.now(timezone.utc).timestamp() / 60.0 / m))
 
 
-def _dl(yf_symbol, interval):
+def _dl(yf_symbol, interval, period):
     try:
         import yfinance as yf
-        df = yf.download(yf_symbol, interval=interval, period=TF_PERIOD[interval],
+        df = yf.download(yf_symbol, interval=interval, period=period,
                          progress=False, auto_adjust=False, threads=False)
         if df is None or df.empty:
             return None
@@ -133,16 +135,39 @@ def _dl(yf_symbol, interval):
         return None
 
 
-def get_data(assets, interval, minutes):
-    cache = st.session_state.setdefault("ohlc", {})
+def get_data_live(assets, interval, minutes):
+    """Janela CURTA — é o caminho crítico do sinal. Refeita a cada vela."""
+    cache = st.session_state.setdefault("ohlc_live", {})
     ck = candle_key(minutes)
     todo = [a for a in assets if (a["yf"], interval, ck) not in cache]
+    took = 0.0
     if todo:
-        with ThreadPoolExecutor(max_workers=min(8, len(todo))) as ex:
-            futs = {ex.submit(_dl, a["yf"], interval): a for a in todo}
+        t0 = time.perf_counter()
+        with ThreadPoolExecutor(max_workers=min(10, len(todo))) as ex:
+            futs = {ex.submit(_dl, a["yf"], interval, TF_PERIOD_LIVE[interval]): a for a in todo}
             for f in as_completed(futs):
                 cache[(futs[f]["yf"], interval, ck)] = f.result()
-    return {a["name"]: cache.get((a["yf"], interval, ck)) for a in assets}
+        took = time.perf_counter() - t0
+        st.session_state["last_fetch_s"] = took
+        # limpa chaves de velas antigas para a sessão não crescer sem limite
+        for k in [k for k in cache if k[2] < ck - 3]:
+            cache.pop(k, None)
+    return {a["name"]: cache.get((a["yf"], interval, ck)) for a in assets}, took
+
+
+def get_data_hist(assets, interval):
+    """Janela GRANDE — só para o painel de desempenho. Cache de 10 minutos."""
+    cache = st.session_state.setdefault("ohlc_hist", {})
+    bucket = int(datetime.now(timezone.utc).timestamp() // 600)
+    todo = [a for a in assets if (a["yf"], interval, bucket) not in cache]
+    if todo:
+        with ThreadPoolExecutor(max_workers=min(10, len(todo))) as ex:
+            futs = {ex.submit(_dl, a["yf"], interval, TF_PERIOD[interval]): a for a in todo}
+            for f in as_completed(futs):
+                cache[(futs[f]["yf"], interval, bucket)] = f.result()
+        for k in [k for k in cache if k[2] < bucket - 1]:
+            cache.pop(k, None)
+    return {a["name"]: cache.get((a["yf"], interval, bucket)) for a in assets}
 
 
 # ============================== DESIGN SYSTEM ==============================
@@ -315,6 +340,8 @@ div[data-testid="stMetricValue"]{font-family:'IBM Plex Mono',monospace;font-size
 @keyframes bl{0%,100%{opacity:.45}50%{opacity:1}}
 .hero.stale,.card.stale{opacity:.42;filter:saturate(.55)}
 .hero.stale{border-color:var(--line)}
+.lat{font-size:.66rem;color:var(--mut);margin:6px 0 2px;font-family:'IBM Plex Mono',monospace}
+.lat b{color:var(--ink2);font-weight:600}
 /* remove o vão que o iframe do contador cria */
 div[data-testid="element-container"]:has(iframe){margin-top:-6px;margin-bottom:-10px}
 div[data-testid="stExpander"]{margin-bottom:4px}
@@ -391,24 +418,36 @@ if auto_on:
 
 open_assets = [a for a in ASSETS if pair_open(a, now)]
 scan_list = ASSETS if show_closed else open_assets
-data = get_data(scan_list, interval, minutes)
+t_scan0 = time.perf_counter()
+data, fetch_s = get_data_live(scan_list, interval, minutes)
+if not fetch_s:
+    fetch_s = st.session_state.get("last_fetch_s", 0.0)
 
 
-def data_lag(data_map):
-    """Maior atraso (min) entre a última vela recebida e o relógio."""
+def data_diag(data_map):
+    """
+    Diagnóstico real de atraso.
+    esperada = última vela que JÁ deveria ter fechado.
+    faltando = ativos cuja vela esperada ainda não chegou (sinal seria calculado
+    sobre dados vencidos).
+    """
     ref = pd.Timestamp(now).tz_localize(None)
-    pior, quem = None, None
+    esperada = pd.Timestamp((candle_key(minutes) - 1) * minutes * 60, unit="s")
+    pior, quem, faltando = None, None, []
     for nome, df in data_map.items():
         if df is None or len(df) == 0:
             continue
-        lag = (ref - df.index[-1]).total_seconds() / 60.0
+        ult = df.index[-1]
+        lag = (ref - ult).total_seconds() / 60.0
         if pior is None or lag > pior:
             pior, quem = lag, nome
-    return pior, quem
+        if ult < esperada:
+            faltando.append(nome)
+    return pior, quem, faltando, esperada
 
 
-lag_min, lag_asset = data_lag(data)
-dados_atrasados = lag_min is not None and lag_min > (2 * minutes + 1)
+lag_min, lag_asset, sem_vela, vela_esperada = data_diag(data)
+dados_atrasados = bool(sem_vela) or (lag_min is not None and lag_min > (2 * minutes + 1))
 
 # ============================== SCANNER ==============================
 agg = {}
@@ -443,11 +482,12 @@ entries.sort(key=lambda e: (len(e["strats"]), FORCE_ORDER[e["force"]], e["score"
 # ============================== DESEMPENHO ==============================
 def run_perf():
     today = now.date()
+    dhist = get_data_hist(scan_list, interval)      # janela grande, cache de 10 min
     out = {}
     for name in STRATEGIES:
         acc = {"hoje": [0, 0], "per": [0, 0]}
         for a in scan_list:
-            df = data.get(a["name"])
+            df = dhist.get(a["name"])
             if df is None or len(df) < 80:
                 continue
             d = add_indicators(df)
@@ -669,10 +709,21 @@ with tab_sig:
                     f'Próxima janela de entrada em {mm:02d}:{ss:02d}.</div>', unsafe_allow_html=True)
 
     if dados_atrasados:
+        if sem_vela:
+            quais = ", ".join(sem_vela[:4]) + ("…" if len(sem_vela) > 4 else "")
+            det = (f'a vela das {hm(vela_esperada)} ainda não chegou para {len(sem_vela)} ativo(s) '
+                   f'({quais}) — nesses o sinal está sendo calculado sobre a vela anterior')
+        else:
+            det = f'a vela mais recente ({lag_asset}) chegou há {lag_min:.0f} min'
         st.markdown(f'<div class="win alert"><span class="pt"></span>'
-                    f'<b>Dados atrasados</b> — a vela mais recente ({lag_asset}) chegou há '
-                    f'{lag_min:.0f} min. O sinal pode estar calculado sobre dados vencidos.</div>',
-                    unsafe_allow_html=True)
+                    f'<b>Atraso na fonte de dados</b> — {det}.</div>', unsafe_allow_html=True)
+
+    # medição real da latência (transparência)
+    render_s = time.perf_counter() - t_scan0
+    st.markdown(f'<div class="lat">busca dos candles <b>{fetch_s:.1f}s</b> · '
+                f'processamento <b>{max(0.0, render_s - fetch_s):.1f}s</b> · '
+                f'defasagem da última vela <b>{(lag_min or 0):.1f} min</b></div>',
+                unsafe_allow_html=True)
 
     if entries:
         dim = "" if window_open else " stale"
