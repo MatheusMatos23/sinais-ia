@@ -14,7 +14,15 @@ from __future__ import annotations
 import math
 import socket
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+
+# Fuso de exibição: horário de Brasília. Todo o cálculo interno segue em UTC
+# (os candles do yfinance são UTC); só a APRESENTAÇÃO é convertida.
+try:
+    from zoneinfo import ZoneInfo
+    BR_TZ = ZoneInfo("America/Sao_Paulo")
+except Exception:                                   # fallback: UTC-3 fixo
+    BR_TZ = timezone(timedelta(hours=-3))
 
 import pandas as pd
 import streamlit as st
@@ -48,6 +56,21 @@ TF_YF = {"1": "1m", "5": "5m", "15": "15m"}
 TF_PERIOD = {"1m": "7d", "5m": "1mo", "15m": "1mo"}
 FORCE_ORDER = {"FRACA": 1, "MEDIA": 2, "FORTE": 3}
 FL = {"FRACA": "FRACA", "MEDIA": "MÉDIA", "FORTE": "FORTE"}
+
+
+def br(ts):
+    """Timestamp UTC (naive ou aware) -> horário de Brasília."""
+    t = pd.Timestamp(ts)
+    t = t.tz_localize("UTC") if t.tzinfo is None else t.tz_convert("UTC")
+    return t.tz_convert(BR_TZ)
+
+
+def hm(ts):
+    return br(ts).strftime("%H:%M")
+
+
+def dhm(ts):
+    return br(ts).strftime("%d/%m %H:%M")
 
 
 def fmt_price(name, v):
@@ -155,11 +178,12 @@ hr{border-color:var(--line)}
 /* ---------- CONTROLES ---------- */
 .lbl{font-size:.58rem;letter-spacing:.14em;color:var(--mut);font-weight:600;
   text-transform:uppercase;margin-bottom:7px}
-div[role="radiogroup"]{gap:4px!important;background:var(--surf);border:1px solid var(--line);
-  border-radius:10px;padding:4px;display:inline-flex;align-items:center}
+div[role="radiogroup"]{gap:3px!important;background:var(--surf);border:1px solid var(--line);
+  border-radius:10px;padding:4px;display:inline-flex;align-items:center;
+  flex-wrap:nowrap!important;white-space:nowrap}
 div[role="radiogroup"] label{background:transparent;border:0;margin:0;
-  padding:6px 14px;border-radius:7px;font-weight:600;font-size:.8rem;
-  transition:background .15s;cursor:pointer}
+  padding:6px 11px;border-radius:7px;font-weight:600;font-size:.78rem;
+  transition:background .15s;cursor:pointer;white-space:nowrap;flex:0 0 auto}
 div[role="radiogroup"] label:hover{background:rgba(255,255,255,.04)}
 div[role="radiogroup"] label:has(input:checked){background:var(--surf2)}
 div[role="radiogroup"] [data-testid="stMarkdownContainer"] p{font-size:.8rem!important;
@@ -264,6 +288,9 @@ div[data-testid="stMetricLabel"] p{font-size:.58rem!important;letter-spacing:.14
   text-transform:uppercase;color:var(--mut)!important;font-weight:600!important}
 div[data-testid="stMetricValue"]{font-family:'IBM Plex Mono',monospace;font-size:1.3rem;
   font-variant-numeric:tabular-nums}
+/* remove o vão que o iframe do contador cria */
+div[data-testid="element-container"]:has(iframe){margin-top:-6px;margin-bottom:-10px}
+div[data-testid="stExpander"]{margin-bottom:4px}
 @media(max-width:900px){.hero{grid-template-columns:1fr}.hero-side{border-left:0;border-top:1px solid var(--line)}}
 </style>
 """, unsafe_allow_html=True)
@@ -395,6 +422,8 @@ topbar_slot.markdown(f"""
     <div class="meta"><span class="k">Timeframe</span><span class="v">{TF_LABEL[TF]}</span></div>
     <div class="meta"><span class="k">Estratégias</span><span class="v">{len(sel_strats)} ativas</span></div>
     <div class="meta"><span class="k">Varredura</span><span class="v">{len(scan_list)} ativos</span></div>
+    <div class="meta"><span class="k">Horário de Brasília</span>
+      <span class="v mono">{br(now).strftime('%H:%M:%S')}</span></div>
   </div>
 </div>""", unsafe_allow_html=True)
 
@@ -514,9 +543,9 @@ def card_html(e):
 
 # ============================== ABA SINAIS ==============================
 with tab_sig:
-    cvela = pd.Timestamp(candle_key(minutes) * minutes * 60, unit="s").strftime("%H:%M")
+    cvela = hm(pd.Timestamp(candle_key(minutes) * minutes * 60, unit="s"))
     if entries:
-        st.markdown(hero_html(entries[0], cvela + " UTC"), unsafe_allow_html=True)
+        st.markdown(hero_html(entries[0], cvela), unsafe_allow_html=True)
         rest = entries[1:]
         st.markdown(f'<div class="sect">Outras entradas · {len(entries)} no total</div>',
                     unsafe_allow_html=True)
@@ -535,7 +564,7 @@ with tab_sig:
           </div>
           <div class="hero-side">
             <div class="h-row"><span class="h-k">Próxima vela</span>
-              <span class="h-v mono">{cvela} UTC</span></div>
+              <span class="h-v mono">{cvela}</span></div>
             <div class="h-row"><span class="h-k">Estratégias ativas</span>
               <span class="h-v">{len(sel_strats)}</span></div>
             <div class="h-row"><span class="h-k">Ativos varridos</span>
@@ -657,7 +686,7 @@ with tab_hist:
             dcls = "good" if h["dir"] == "COMPRA" else "bad"
             arw = "▲" if h["dir"] == "COMPRA" else "▼"
             chips_h = "".join(f'<span class="sc">{s}</span>' for s in h["strats"])
-            rows += (f'<tr><td class="n">{h["ts"].strftime("%d/%m %H:%M")} UTC</td>'
+            rows += (f'<tr><td class="n">{dhm(h["ts"])}</td>'
                      f'<td class="nm">{h["asset"]}</td>'
                      f'<td class="{dcls}" style="font-weight:800">{arw} {h["dir"]}</td>'
                      f'<td class="n">{FL[h["force"]]}</td>'
