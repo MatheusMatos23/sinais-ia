@@ -812,6 +812,40 @@ div[data-testid="stExpander"] summary:hover{color:var(--ink)}
 [data-testid="stHorizontalBlock"]{transition:none!important}
 [data-stale="true"]{opacity:1!important;transition:none!important;filter:none!important}
 
+/* Separador de dia no histórico, com o subtotal na própria linha. */
+.tbl tr.daysep td{background:rgba(255,255,255,.03);border-bottom:1px solid var(--line2);
+  padding:9px 14px}
+.tbl tr.daysep .dlbl{font-size:.62rem;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--ink2);font-weight:700;margin-right:12px}
+.tbl tr.daysep:hover td{background:rgba(255,255,255,.03)}
+
+/* Altura mínima do painel: quando o número de entradas cai para zero o conteúdo
+   encolhe e a página dá um salto. Reservando o espaço, nada pula. */
+[data-testid="stTabs"] [role="tabpanel"]{min-height:520px}
+
+/* Realce de 1s no cartão que mudou. É o oposto do pisca geral: em vez de
+   destacar tudo (e portanto nada), marca só o que é novo. */
+@keyframes surge{
+  0%{box-shadow:0 0 0 0 rgba(0,200,138,.55);transform:translateY(-2px)}
+  100%{box-shadow:0 0 0 14px rgba(0,200,138,0);transform:none}}
+.hero.novo{animation:surge 1s cubic-bezier(.2,.7,.3,1) 1}
+
+/* ---------- MODO FOCO ----------
+   Só o sinal na tela. Para quando você está operando, não configurando. */
+body.foco [data-testid="stHorizontalBlock"]:has(.lbl),
+body.foco [data-testid="stTabs"] [role="tablist"],
+body.foco .diagbox,
+body.foco .hdr .meta:not(.cd-meta){display:none!important}
+body.foco .block-container{padding-top:.6rem}
+body.foco [data-testid="stTabs"] [role="tabpanel"]{min-height:0}
+.focobtn{display:inline-flex;align-items:center;gap:7px;text-decoration:none!important;
+  font-size:.64rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase;
+  padding:7px 12px;border-radius:999px;border:1px solid var(--line2);
+  color:var(--mut);background:var(--surf2);flex:none;margin-left:8px}
+.focobtn:hover{filter:brightness(1.25)}
+.focobtn.on{color:var(--warn);border-color:rgba(217,164,65,.35);
+  background:rgba(217,164,65,.10)}
+
 /* Rodapé discreto. */
 .foot{margin:var(--gap-secao) 0 8px;text-align:center;font-size:.66rem;color:var(--mut);
   border-top:1px solid var(--line);padding-top:16px}
@@ -894,6 +928,7 @@ div[data-testid="stExpander"]{margin:2px 0 var(--gap-curto)}
 # num cabeçalho denso. Como link com query param, o controle vira HTML meu: fica
 # no cabeçalho, alinhado à direita, e o estado sobrevive a recarregar a página.
 auto_on = st.query_params.get("live", "1") != "0"
+foco = st.query_params.get("foco", "0") == "1"
 
 topbar_slot = st.empty()          # a barra de status é preenchida depois (precisa dos dados)
 st.markdown('<div class="ctrlbar">', unsafe_allow_html=True)
@@ -1194,9 +1229,13 @@ topbar_slot.markdown(f"""
       <span class="v mono" id="kairo-cd">--:--</span></div>
     <span id="kairo-cdbadge"></span>
   </div>
+  <a class="focobtn {'on' if foco else ''}" target="_self"
+     href="?live={'1' if auto_on else '0'}&foco={'0' if foco else '1'}"
+     title="{'Sair do modo foco' if foco else 'Modo foco: esconde controles e abas'}"
+     >{'Sair do foco' if foco else 'Foco'}</a>
   <span class="hdr-prog"><i id="kairo-cdfill"></i></span>
   <a class="livebtn {'on' if auto_on else ''}" target="_self"
-     href="?live={'0' if auto_on else '1'}"
+     href="?live={'0' if auto_on else '1'}&foco={'1' if foco else '0'}"
      title="{'Pausar a atualização automática para ler as tabelas paradas'
              if auto_on else 'Retomar a atualização automática'}"><i></i>{
      'Ao vivo' if auto_on else 'Pausado'}</a>
@@ -1212,6 +1251,9 @@ html_box(f"""
    eliminou um bloco inteiro de largura total que só mostrava um relógio. */
 var TF={int(TF)}, JAN={ENTRY_WINDOW};
 var PD=window.parent.document;
+/* O modo foco é uma classe no <body> do app. Só o iframe consegue mexer lá,
+   porque st.markdown não executa script. */
+PD.body.classList.toggle('foco', {str(foco).lower()});
 function t(){{
   var n=Date.now()/1000, per=TF*60, pos=n%per, l=per-pos;
   var m=Math.floor(l/60), s=Math.floor(l%60);
@@ -1529,8 +1571,14 @@ with tab_sig:
                    alerta=(tl is not None and tl > 5)))
     if TD_KEY:
         usados, lim, dia = td_status()
+        # 640 = 80% da cota diária. O aviso tem de vir com folga para dar tempo
+        # de reduzir ativos ou trocar de timeframe antes de cair no yfinance.
         cs.append(chip("Créditos TD", f"{usados}/{lim} min · {dia}/800 dia",
-                       alerta=(dia > 700)))
+                       alerta=(dia >= 640)))
+        if dia >= 640:
+            st.warning(f"Créditos da Twelve Data em {dia}/800 hoje. Perto do limite, "
+                       f"o forex volta para o yfinance, que chega ~3 min mais atrasado. "
+                       f"Para esticar: use 5 ou 15 min, ou reduza os ativos varridos.")
     if bloqueados:
         cs.append(chip("Bloqueados", f"{len(bloqueados)}", alerta=True))
     err = st.session_state.get("td_erro")
@@ -1553,7 +1601,14 @@ with tab_sig:
 
     if entries:
         dim = "" if window_open else " stale"
-        st.markdown(hero_html(entries[0], cvela).replace('class="hero ', f'class="hero{dim} '),
+        # Realce só quando a entrada em destaque REALMENTE mudou (ativo, direção
+        # ou vela). Sem isso o cartão brilharia a cada rerun, que é o problema
+        # que acabamos de tirar da tela.
+        _chave = (entries[0]["a"]["name"], entries[0]["dir"], candle_key(minutes))
+        novo_sinal = st.session_state.get("ultimo_sinal") != _chave
+        st.session_state["ultimo_sinal"] = _chave
+        _cls = f'hero{dim}{" novo" if novo_sinal else ""} '
+        st.markdown(hero_html(entries[0], cvela).replace('class="hero ', f'class="{_cls}'),
                     unsafe_allow_html=True)
         rest = entries[1:]
         st.markdown(f'<div class="sect">Outras entradas · {len(entries)} no total</div>',
@@ -1833,9 +1888,15 @@ with tab_hist:
             f_res = st.multiselect("Filtrar por resultado",
                                    ["ganhou", "perdeu", "empate", "aguardando"], default=[],
                                    placeholder="Todos os resultados")
+        # Misturar 1min e 5min numa taxa só é comparar coisas diferentes.
+        tfs = sorted({h.get("tf") for h in hist if h.get("tf")})
+        f_tf = st.multiselect("Filtrar por timeframe", tfs, default=[],
+                              format_func=lambda v: f"{v} min",
+                              placeholder="Todos os timeframes")
         vis = [h for h in hist
                if (not f_est or any(s in f_est for s in h["strats"]))
-               and (not f_res or (h["res"] or "aguardando") in f_res)]
+               and (not f_res or (h["res"] or "aguardando") in f_res)
+               and (not f_tf or h.get("tf") in f_tf)]
 
         VTXT = {"acima": ('v-good', 'acima do breakeven'),
                 "abaixo": ('v-bad', 'abaixo do breakeven'),
@@ -1893,30 +1954,45 @@ with tab_hist:
                        "intervalos vão ficar largos e o veredito, não conclusivo — isso é "
                        "o esperado, não um defeito.")
 
+        # Agrupado por dia, com subtotal em cada cabeçalho. A taxa agregada
+        # esconde dias sistematicamente ruins; separando, isso fica visível.
+        VERD = {"ganhou": ("v-good", "ganhou"), "perdeu": ("v-bad", "perdeu"),
+                "empate": ("v-mid", "empate"), None: ("v-mid", "aguardando")}
+        por_dia = {}
+        for h in sorted(vis, key=lambda x: x["ts"], reverse=True)[:200]:
+            por_dia.setdefault(br(h["ts"]).strftime("%d/%m/%Y"), []).append(h)
+
         rows = ""
-        for h in sorted(vis, key=lambda x: x["ts"], reverse=True)[:60]:
-            if h["res"] == "ganhou":
-                r = '<span class="verd v-good">ganhou</span>'
-            elif h["res"] == "perdeu":
-                r = '<span class="verd v-bad">perdeu</span>'
-            elif h["res"] == "empate":
-                r = '<span class="verd v-mid">empate</span>'
+        for dia_lbl, itens in por_dia.items():
+            f_ = [x for x in itens if x["res"] in ("ganhou", "perdeu")]
+            w_ = sum(1 for x in f_ if x["res"] == "ganhou")
+            if f_:
+                tx = w_ / len(f_) * 100
+                cls_ = "good" if tx >= BE else "bad"
+                sub = (f'<span class="{cls_} mono" style="font-weight:700">{tx:.1f}%</span>'
+                       f'<span class="n"> · {w_}/{len(f_)} resolvidos</span>')
             else:
-                r = '<span class="verd v-mid">aguardando</span>'
-            dcls = "good" if h["dir"] == "COMPRA" else "bad"
-            arw = "▲" if h["dir"] == "COMPRA" else "▼"
-            chips_h = "".join(f'<span class="sc">{s}</span>' for s in h["strats"])
-            _lg = h.get("lag")
-            lag_txt = f'{_lg:.1f}min' if isinstance(_lg, (int, float)) and math.isfinite(_lg) else "—"
-            rows += (f'<tr><td class="n">{dhm(h["ts"])}</td>'
-                     f'<td class="nm">{h["asset"]}</td>'
-                     f'<td class="{dcls}" style="font-weight:800">{arw} {h["dir"]}</td>'
-                     f'<td class="n">{FL[h["force"]]}</td>'
-                     f'<td>{chips_h}</td>'
-                     f'<td class="n mono">{lag_txt}</td><td>{r}</td></tr>')
+                sub = '<span class="n">nenhuma resolvida</span>'
+            rows += (f'<tr class="daysep"><td colspan="7">'
+                     f'<span class="dlbl">{dia_lbl}</span>{sub}</td></tr>')
+            for h in itens:
+                vc, vt = VERD.get(h["res"], ("v-mid", "aguardando"))
+                r = f'<span class="verd {vc}">{vt}</span>'
+                dcls = "good" if h["dir"] == "COMPRA" else "bad"
+                arw = "▲" if h["dir"] == "COMPRA" else "▼"
+                chips_h = "".join(f'<span class="sc">{x}</span>' for x in h["strats"])
+                _lg = h.get("lag")
+                lag_txt = (f'{_lg:.1f}min' if isinstance(_lg, (int, float))
+                           and math.isfinite(_lg) else "—")
+                rows += (f'<tr><td class="n">{hm(h["ts"])}</td>'
+                         f'<td class="nm">{h["asset"]}</td>'
+                         f'<td class="n mono">{h.get("tf", "—")}m</td>'
+                         f'<td class="{dcls}" style="font-weight:800">{arw} {h["dir"]}</td>'
+                         f'<td>{chips_h}</td>'
+                         f'<td class="n mono">{lag_txt}</td><td>{r}</td></tr>')
         st.markdown(f'<div class="sect">Sinais registrados · {len(vis)} de {len(hist)}</div>', unsafe_allow_html=True)
-        st.markdown(f'<table class="tbl"><tr><th>Vela</th><th>Ativo</th><th>Direção</th>'
-                    f'<th>Força</th><th>Estratégias</th><th>Atraso</th>'
+        st.markdown(f'<table class="tbl"><tr><th>Hora</th><th>Ativo</th><th>TF</th>'
+                    f'<th>Direção</th><th>Estratégias</th><th>Atraso</th>'
                     f'<th>Resultado</th></tr>{rows}</table>',
                     unsafe_allow_html=True)
         st.markdown('<div class="note"><b>Este é o teste que vale.</b> Aqui não há backtest nem '
