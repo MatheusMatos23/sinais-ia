@@ -239,6 +239,72 @@ def td_fetch(symbols, interval, outputsize=250):
     return out
 
 
+# ====================== FONTE DE DADOS: CRIPTO (EXCHANGES) ======================
+# APIs públicas, sem chave e sem limite prático. O yfinance entrega cripto com
+# vários minutos de atraso; as exchanges entregam a vela fechada em segundos.
+# Cadeia de tentativa: Binance -> Coinbase -> yfinance.
+CRYPTO_SYMS = {
+    "BTC/USD": {"binance": "BTCUSDT", "coinbase": "BTC-USD"},
+    "ETH/USD": {"binance": "ETHUSDT", "coinbase": "ETH-USD"},
+}
+BINANCE_IV = {"1m": "1m", "5m": "5m", "15m": "15m"}
+COINBASE_GRAN = {"1m": 60, "5m": 300, "15m": 900}
+
+
+def _ohlc_df(rows):
+    """rows = [(ts_utc_naive, o, h, l, c)] -> DataFrame ordenado."""
+    if not rows:
+        return None
+    df = pd.DataFrame(rows, columns=["dt", "Open", "High", "Low", "Close"]).set_index("dt")
+    return df.sort_index()
+
+
+def _binance(sym, interval, limit=250):
+    import requests
+    r = requests.get("https://api.binance.com/api/v3/klines",
+                     params={"symbol": sym, "interval": BINANCE_IV[interval], "limit": limit},
+                     timeout=6)
+    j = r.json()
+    if not isinstance(j, list):                      # ex.: 451 em região bloqueada
+        raise RuntimeError(str(j)[:120])
+    return _ohlc_df([(pd.Timestamp(k[0], unit="ms"), float(k[1]), float(k[2]),
+                      float(k[3]), float(k[4])) for k in j])
+
+
+def _coinbase(sym, interval, limit=250):
+    import requests
+    g = COINBASE_GRAN[interval]
+    fim = datetime.now(timezone.utc)
+    ini = fim - timedelta(seconds=g * limit)
+    r = requests.get(f"https://api.exchange.coinbase.com/products/{sym}/candles",
+                     params={"granularity": g, "start": ini.isoformat(),
+                             "end": fim.isoformat()},
+                     headers={"User-Agent": "sinais-ia"}, timeout=6)
+    j = r.json()
+    if not isinstance(j, list):
+        raise RuntimeError(str(j)[:120])
+    # Coinbase: [time, low, high, open, close, volume]
+    return _ohlc_df([(pd.Timestamp(k[0], unit="s"), float(k[3]), float(k[2]),
+                      float(k[1]), float(k[4])) for k in j])
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def crypto_fetch(nome, interval, candle):
+    """Retorna (DataFrame, fonte) ou (None, None). `candle` só invalida o cache."""
+    m = CRYPTO_SYMS.get(nome)
+    if not m:
+        return None, None
+    for fonte, fn, sym in (("binance", _binance, m["binance"]),
+                           ("coinbase", _coinbase, m["coinbase"])):
+        try:
+            d = fn(sym, interval)
+            if d is not None and len(d) >= 60:
+                return d, fonte
+        except Exception:
+            continue
+    return None, None
+
+
 def _dl(yf_symbol, interval, period):
     try:
         import yfinance as yf
@@ -282,7 +348,14 @@ def get_data_live(assets, interval, minutes):
                         cache[(a["yf"], interval, ck)] = d
                         fontes[a["name"]] = "twelvedata"
                         pend.remove(a)
-        # 2) yfinance para o resto (cripto + eventuais falhas)
+        # 2) Cripto direto da exchange (rápido, sem chave)
+        for a in [x for x in pend if x["type"] == "crypto"]:
+            d, fonte = crypto_fetch(a["name"], interval, ck)
+            if d is not None and len(d):
+                cache[(a["yf"], interval, ck)] = d
+                fontes[a["name"]] = fonte
+                pend.remove(a)
+        # 3) yfinance para o resto (falhas das fontes acima)
         if pend:
             with ThreadPoolExecutor(max_workers=min(10, len(pend))) as ex:
                 futs = {ex.submit(_dl, a["yf"], interval, TF_PERIOD_LIVE[interval]): a for a in pend}
@@ -527,9 +600,21 @@ with st.expander("Mais opções — filtros, áudio, payout e atualização"):
         st.caption("O navegador exige um clique para liberar som — o botão aparece na aba Sinais.")
     with o3:
         st.markdown("**Análise e atualização**")
-        payout_lbl = st.radio("Payout da corretora", ["80%", "90%"], index=0, horizontal=True)
+        payout_lbl = st.radio("Payout padrão da corretora", ["80%", "90%"], index=0,
+                              horizontal=True)
         auto_on = st.toggle("Atualização automática", value=True)
         every = st.slider("Intervalo (s)", 10, 60, 15, step=5, disabled=not auto_on)
+    st.markdown("**Payout por ativo** — o breakeven muda com o payout, então vale "
+                "conferir o de cada par na sua corretora. Em branco = usa o padrão.")
+    pc1, pc2 = st.columns(2)
+    _pay_ovr = {}
+    for i, a in enumerate(ASSETS):
+        with (pc1 if i % 2 == 0 else pc2):
+            v = st.number_input(a["name"], min_value=0, max_value=100, step=1, value=0,
+                                key=f"pay_{a['name']}",
+                                help="0 = usar o payout padrão")
+            if v:
+                _pay_ovr[a["name"]] = v / 100.0
     st.markdown("**Sessões do mercado — horário de Brasília**")
     ativas = set(active_sessions(datetime.now(timezone.utc)))
     BADGE = '<span class="verd v-good">ativa</span>'
@@ -543,6 +628,12 @@ with st.expander("Mais opções — filtros, áudio, payout e atualização"):
                 unsafe_allow_html=True)
 PAYOUT = 0.80 if payout_lbl == "80%" else 0.90
 BE = breakeven(PAYOUT) * 100
+PAY_OVR = _pay_ovr
+
+
+def payout_de(nome):
+    """Payout do ativo (o específico, se informado; senão o padrão)."""
+    return PAY_OVR.get(nome, PAYOUT)
 
 now = datetime.now(timezone.utc)
 interval, minutes = TF_YF[TF], int(TF)
@@ -578,11 +669,13 @@ def data_diag(data_map):
     fontes = st.session_state.get("fontes", {})
     pior, quem, faltando = None, None, []
     por_fonte = {}                                   # fonte -> pior atraso (min)
+    por_ativo = {}                                   # ativo -> atraso (min)
     for nome, df in data_map.items():
         if df is None or len(df) == 0:
             continue
         ult = df.index[-1]
         lag = (ref - ult).total_seconds() / 60.0
+        por_ativo[nome] = lag
         src = fontes.get(nome, "yfinance")
         if src not in por_fonte or lag > por_fonte[src]:
             por_fonte[src] = lag
@@ -590,15 +683,24 @@ def data_diag(data_map):
             pior, quem = lag, nome
         if ult < esperada:
             faltando.append(nome)
-    return pior, quem, faltando, esperada, por_fonte
+    return pior, quem, faltando, esperada, por_fonte, por_ativo
 
 
-lag_min, lag_asset, sem_vela, vela_esperada, lag_fonte = data_diag(data)
+lag_min, lag_asset, sem_vela, vela_esperada, lag_fonte, lag_ativo = data_diag(data)
 dados_atrasados = bool(sem_vela) or (lag_min is not None and lag_min > (2 * minutes + 1))
+
+# Corte duro de frescor. A estratégia lê a ÚLTIMA VELA FECHADA. Se a vela que já
+# deveria ter fechado ainda não chegou, o que o motor chama de "vela anterior" não
+# é a que você vê no gráfico da corretora — o sinal descreve outro momento do
+# mercado. Antes isso era só um aviso amarelo; agora o ativo sai da varredura.
+# A condição é a mesma de `sem_vela`: última vela recebida < vela esperada.
+bloqueados = set(sem_vela)
 
 # ============================== SCANNER ==============================
 agg = {}
 for a in scan_list:
+    if a["name"] in bloqueados:        # dado vencido: não vira entrada
+        continue
     df = data.get(a["name"])
     if df is None or len(df) < 60:
         continue
@@ -747,6 +849,8 @@ def hist_df(h):
         "ativo": r["asset"], "direcao": r["dir"], "forca": FL.get(r["force"], r["force"]),
         "estrategias": "+".join(r["strats"]), "timeframe_min": r.get("tf", ""),
         "resultado": r["res"] or "aguardando",
+        "atraso_min": r.get("lag", ""), "fonte": r.get("src", ""),
+        "payout": r.get("payout", ""),
     } for r in sorted(h, key=lambda x: x["ts"], reverse=True)])
 
 
@@ -760,9 +864,15 @@ def record_and_resolve(entries, data, minutes):
     for e in entries:
         k = (e["a"]["name"], e["dir"], ck, minutes)
         if k not in seen:
-            hist.append({"ck": ck, "ts": start, "asset": e["a"]["name"], "dir": e["dir"],
+            nome = e["a"]["name"]
+            hist.append({"ck": ck, "ts": start, "asset": nome, "dir": e["dir"],
                          "force": e["force"], "strats": [_short(s) for s in e["strats"]],
-                         "tf": minutes, "res": None})
+                         "tf": minutes, "res": None,
+                         # instrumentação: permite medir depois se atraso derruba o acerto
+                         "lag": (round(float(lag_ativo[nome]), 2)
+                                 if nome in lag_ativo else None),
+                         "src": st.session_state.get("fontes", {}).get(nome, "?"),
+                         "payout": payout_de(nome)})
             seen.add(k)
             changed = True
     for h in hist:                                        # apura o que já fechou
@@ -859,7 +969,7 @@ with tab_sig:
         if sem_vela:
             quais = ", ".join(sem_vela[:4]) + ("…" if len(sem_vela) > 4 else "")
             det = (f'a vela das {hm(vela_esperada)} ainda não chegou para {len(sem_vela)} ativo(s) '
-                   f'({quais}) — nesses o sinal está sendo calculado sobre a vela anterior')
+                   f'({quais}) — <b>bloqueados nesta vela</b>, não geram entrada')
         else:
             det = f'a vela mais recente ({lag_asset}) chegou há {lag_min:.0f} min'
         st.markdown(f'<div class="win alert"><span class="pt"></span>'
@@ -880,7 +990,9 @@ with tab_sig:
             fonte_txt = f'<b>yfinance</b> — Twelve Data indisponível: {err}'
     else:
         fonte_txt = "<b>yfinance</b> (sem chave da Twelve Data)"
-    det = " · ".join(f"{'TD' if k == 'twelvedata' else 'YF'} <b>{v:.1f}min</b>"
+    SRC = {"twelvedata": "Twelve Data", "binance": "Binance",
+           "coinbase": "Coinbase", "yfinance": "yfinance"}
+    det = " · ".join(f"{SRC.get(k, k)} <b>{v:.1f}min</b>"
                      for k, v in sorted(lag_fonte.items()))
     cred = ""
     if TD_KEY:
@@ -1020,6 +1132,62 @@ with tab_hist:
                        f"(breakeven {BE:.2f}% com payout {payout_lbl}) · "
                        f"{emp} empate(s) devolvido(s) · {abertos} aguardando fechar")
 
+        VTXT = {"acima": ('v-good', 'acima do breakeven'),
+                "abaixo": ('v-bad', 'abaixo do breakeven'),
+                "inconclusivo": ('v-mid', 'não conclusivo'),
+                "sem dados": ('v-mid', 'sem dados')}
+
+        def linha_ic(rot, sub, sinais, payout):
+            """Linha de tabela com n, taxa, IC95 e veredito para um recorte."""
+            f = [h for h in sinais if h["res"] in ("ganhou", "perdeu")]
+            if not f:
+                return (f'<tr><td class="nm">{rot}</td><td class="n">{sub}</td>'
+                        f'<td class="n">0</td><td class="n">—</td><td class="n">—</td>'
+                        f'<td><span class="verd v-mid">sem dados</span></td></tr>')
+            w = sum(1 for h in f if h["res"] == "ganhou")
+            _p, _lo, _hi = wilson_ci(w, len(f))
+            cls, t = VTXT[verdict(w, len(f), payout)]
+            return (f'<tr><td class="nm">{rot}</td><td class="n">{sub}</td>'
+                    f'<td class="n mono">{len(f)}</td>'
+                    f'<td class="n mono">{w/len(f)*100:.1f}%</td>'
+                    f'<td class="n mono">{_lo*100:.0f}–{_hi*100:.0f}%</td>'
+                    f'<td><span class="verd {cls}">{t}</span></td></tr>')
+
+        # ---- por estratégia (um sinal com 2 estratégias conta nas duas) ----
+        por_est = {}
+        for h in hist:
+            for s in h["strats"]:
+                por_est.setdefault(s, []).append(h)
+        if por_est:
+            linhas = "".join(
+                linha_ic(s, "estratégia", v, PAYOUT)
+                for s, v in sorted(por_est.items(),
+                                   key=lambda kv: -sum(1 for h in kv[1]
+                                                       if h["res"] in ("ganhou", "perdeu"))))
+            st.markdown('<div class="sect">Forward test por estratégia</div>',
+                        unsafe_allow_html=True)
+            st.markdown(f'<table class="tbl"><tr><th>Recorte</th><th>Tipo</th><th>Ops</th>'
+                        f'<th>Acerto</th><th>IC95</th><th>Veredito</th></tr>{linhas}</table>',
+                        unsafe_allow_html=True)
+
+        # ---- dado fresco x dado atrasado: a pergunta que a instrumentação responde ----
+        com_lag = [h for h in hist if isinstance(h.get("lag"), (int, float))
+                   and math.isfinite(h["lag"])]
+        if com_lag:
+            corte = max(1.0, float(minutes))
+            fresco = [h for h in com_lag if h["lag"] <= corte]
+            velho = [h for h in com_lag if h["lag"] > corte]
+            linhas = (linha_ic(f"Atraso ≤ {corte:.0f} min", "dado fresco", fresco, PAYOUT)
+                      + linha_ic(f"Atraso > {corte:.0f} min", "dado atrasado", velho, PAYOUT))
+            st.markdown('<div class="sect">Efeito do atraso dos dados</div>',
+                        unsafe_allow_html=True)
+            st.markdown(f'<table class="tbl"><tr><th>Recorte</th><th>Tipo</th><th>Ops</th>'
+                        f'<th>Acerto</th><th>IC95</th><th>Veredito</th></tr>{linhas}</table>',
+                        unsafe_allow_html=True)
+            st.caption("Só ganha sentido com algumas centenas de operações. Até lá os "
+                       "intervalos vão ficar largos e o veredito, não conclusivo — isso é "
+                       "o esperado, não um defeito.")
+
         rows = ""
         for h in sorted(hist, key=lambda x: x["ts"], reverse=True)[:60]:
             if h["res"] == "ganhou":
@@ -1033,14 +1201,18 @@ with tab_hist:
             dcls = "good" if h["dir"] == "COMPRA" else "bad"
             arw = "▲" if h["dir"] == "COMPRA" else "▼"
             chips_h = "".join(f'<span class="sc">{s}</span>' for s in h["strats"])
+            _lg = h.get("lag")
+            lag_txt = f'{_lg:.1f}min' if isinstance(_lg, (int, float)) and math.isfinite(_lg) else "—"
             rows += (f'<tr><td class="n">{dhm(h["ts"])}</td>'
                      f'<td class="nm">{h["asset"]}</td>'
                      f'<td class="{dcls}" style="font-weight:800">{arw} {h["dir"]}</td>'
                      f'<td class="n">{FL[h["force"]]}</td>'
-                     f'<td>{chips_h}</td><td>{r}</td></tr>')
+                     f'<td>{chips_h}</td>'
+                     f'<td class="n mono">{lag_txt}</td><td>{r}</td></tr>')
         st.markdown('<div class="sect">Sinais desta sessão</div>', unsafe_allow_html=True)
         st.markdown(f'<table class="tbl"><tr><th>Vela</th><th>Ativo</th><th>Direção</th>'
-                    f'<th>Força</th><th>Estratégias</th><th>Resultado</th></tr>{rows}</table>',
+                    f'<th>Força</th><th>Estratégias</th><th>Atraso</th>'
+                    f'<th>Resultado</th></tr>{rows}</table>',
                     unsafe_allow_html=True)
         st.markdown('<div class="note"><b>Este é o teste que vale.</b> Aqui não há backtest nem '
                     'seleção de período: são os sinais que o app realmente emitiu, apurados pela '
