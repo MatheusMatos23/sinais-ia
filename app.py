@@ -38,6 +38,13 @@ from streamlit_autorefresh import st_autorefresh
 from strategies import (STRATEGIES, add_indicators, score_of, classify,
                         backtest, wilson_ci, breakeven, verdict)
 
+# st.components.v1.html está depreciado e já passou da data de remoção
+# (01/06/2026). Usa st.iframe onde existir, mantendo o fallback para rodar
+# em instalações locais com Streamlit antigo.
+def html_box(code, height=0, **kw):
+    fn = getattr(st, "iframe", None) or components.html
+    return fn(code, height=height, **kw)
+
 socket.setdefaulttimeout(8)
 st.set_page_config(page_title="Sinais IA", page_icon="⚡", layout="wide",
                    initial_sidebar_state="collapsed")
@@ -555,10 +562,19 @@ div[data-testid="stMetricValue"]{font-family:'IBM Plex Mono',monospace;font-size
 @keyframes bl{0%,100%{opacity:.45}50%{opacity:1}}
 .hero.stale,.card.stale{opacity:.42;filter:saturate(.55)}
 .hero.stale{border-color:var(--line)}
-.lat{font-size:.66rem;color:var(--mut);margin:6px 0 2px;font-family:'IBM Plex Mono',monospace}
-.lat b{color:var(--ink2);font-weight:600}
+/* ---------- DIAGNÓSTICO DE DADOS (chips, não log de terminal) ---------- */
+.diag{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:8px 0 4px}
+.chip{display:inline-flex;align-items:center;gap:6px;font-size:.68rem;font-weight:500;
+  color:var(--ink2);background:var(--surf2);border:1px solid var(--line);
+  border-radius:999px;padding:4px 11px;line-height:1.3}
+.chip .ck{color:var(--mut);font-size:.6rem;letter-spacing:.08em;text-transform:uppercase;
+  font-weight:600}
+.chip .cv{font-family:'IBM Plex Mono',monospace;font-weight:600;color:var(--ink);
+  font-variant-numeric:tabular-nums}
+.chip.warn{border-color:rgba(217,164,65,.35);background:rgba(217,164,65,.08)}
+.chip.warn .cv{color:var(--warn)}
 /* remove o vão que o iframe do contador cria */
-div[data-testid="element-container"]:has(iframe){margin-top:-6px;margin-bottom:-10px}
+div[data-testid="element-container"]:has(iframe){margin-top:-10px;margin-bottom:-14px}
 div[data-testid="stExpander"]{margin-bottom:4px}
 @media(max-width:900px){.hero{grid-template-columns:1fr}.hero-side{border-left:0;border-top:1px solid var(--line)}}
 </style>
@@ -772,15 +788,13 @@ topbar_slot.markdown(f"""
     <div class="brand"><span class="mk">S</span>Sinais IA</div>
     <div class="meta"><span class="k">Status</span><span class="v">{stat}</span></div>
     <div class="meta"><span class="k">Sessões</span><span class="v">{sess}</span></div>
-    <div class="meta"><span class="k">Timeframe</span><span class="v">{TF_LABEL[TF]}</span></div>
-    <div class="meta"><span class="k">Estratégias</span><span class="v">{len(sel_strats)} ativas</span></div>
     <div class="meta"><span class="k">Varredura</span><span class="v">{len(scan_list)} ativos</span></div>
     <div class="meta"><span class="k">Horário de Brasília</span>
       <span class="v mono">{br(now).strftime('%H:%M:%S')}</span></div>
   </div>
 </div>""", unsafe_allow_html=True)
 
-components.html(f"""
+html_box(f"""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@500;600&family=IBM+Plex+Mono:wght@600&display=swap');
 *{{box-sizing:border-box}} body{{margin:0}}
@@ -815,30 +829,110 @@ def _short(nm):
 HIST_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hist_signals.json")
 
 
+# --- Persistência remota (opcional) ---------------------------------------
+# O disco do Streamlit Cloud é EFÊMERO: todo rebuild do app zera o container e
+# leva o hist_signals.json junto. Sem isso, o forward test nunca acumula amostra
+# suficiente para dar veredito conclusivo. Com um token nos secrets, o histórico
+# é espelhado num Gist privado e sobrevive aos reinícios.
+GIST_FILE = "sinais_historico.json"
+
+
+def _gh():
+    """(token, gist_id) dos secrets, ou (None, None). O token nunca vai pro código."""
+    def s(k):
+        try:
+            v = st.secrets.get(k, "")
+        except Exception:
+            v = ""
+        return v or os.environ.get(k, "")
+    return s("GITHUB_TOKEN") or None, s("GIST_ID") or None
+
+
+def gist_load():
+    tok, gid = _gh()
+    if not (tok and gid):
+        return None
+    import requests
+    try:
+        r = requests.get(f"https://api.github.com/gists/{gid}", timeout=8,
+                         headers={"Authorization": f"Bearer {tok}",
+                                  "Accept": "application/vnd.github+json"})
+        if r.status_code != 200:
+            st.session_state["gist_erro"] = f"HTTP {r.status_code} ao ler o Gist"
+            return None
+        c = r.json().get("files", {}).get(GIST_FILE, {}).get("content")
+        return json.loads(c) if c else []
+    except Exception as e:
+        st.session_state["gist_erro"] = str(e)[:90]
+        return None
+
+
+_gist_err = [""]          # último erro de gravação (fora do session_state: roda em thread)
+
+
+def gist_save(out):
+    """Grava em background — a virada da vela não pode esperar rede."""
+    tok, gid = _gh()
+    if not (tok and gid):
+        return False
+
+    def _w():
+        import requests
+        try:
+            r = requests.patch(
+                f"https://api.github.com/gists/{gid}", timeout=8,
+                headers={"Authorization": f"Bearer {tok}",
+                         "Accept": "application/vnd.github+json"},
+                json={"files": {GIST_FILE: {"content": json.dumps(out, ensure_ascii=False)}}})
+            _gist_err[0] = "" if r.status_code == 200 else f"HTTP {r.status_code} ao gravar"
+        except Exception as e:
+            _gist_err[0] = str(e)[:90]
+
+    threading.Thread(target=_w, daemon=True).start()
+    return True
+
+
+HIST_REMOTO = all(_gh())
+
+
 def hist_load():
-    """Carrega do disco na primeira execução da sessão."""
+    """Carrega o histórico: Gist (se configurado) e disco local, unindo os dois."""
     if "hist" in st.session_state:
         return st.session_state["hist"]
-    h = []
+    bruto = []
+    remoto = gist_load()
+    if remoto:
+        bruto.extend(remoto)
     try:
         if os.path.exists(HIST_PATH):
             with open(HIST_PATH, "r", encoding="utf-8") as f:
-                for r in json.load(f):
-                    r["ts"] = pd.Timestamp(r["ts"])
-                    h.append(r)
+                bruto.extend(json.load(f))
     except Exception:
-        h = []
+        pass
+    vistos, h = set(), []
+    for r in bruto:                                   # de-duplica local x remoto
+        try:
+            r["ts"] = pd.Timestamp(r["ts"])
+        except Exception:
+            continue
+        k = (r.get("asset"), r.get("dir"), r.get("ck"), r.get("tf"))
+        if k in vistos:
+            continue
+        vistos.add(k)
+        h.append(r)
+    h.sort(key=lambda x: x["ts"])
     st.session_state["hist"] = h
     return h
 
 
 def hist_save(h):
+    out = [{**r, "ts": pd.Timestamp(r["ts"]).isoformat()} for r in h]
     try:
-        out = [{**r, "ts": pd.Timestamp(r["ts"]).isoformat()} for r in h]
         with open(HIST_PATH, "w", encoding="utf-8") as f:
             json.dump(out, f, ensure_ascii=False)
     except Exception:
         pass
+    gist_save(out)
 
 
 def hist_df(h):
@@ -978,28 +1072,36 @@ with tab_sig:
     # medição real da latência (transparência)
     render_s = time.perf_counter() - t_scan0
     _f = st.session_state.get("fontes", {})
-    n_td = sum(1 for v in _f.values() if v == "twelvedata")
-    caidos = [k for k, v in _f.items() if v == "yfinance" and k in {a["name"] for a in scan_list}
-              and next((x for x in ASSETS if x["name"] == k), {}).get("type") == "fx"]
-    if TD_KEY:
-        fonte_txt = f"<b>Twelve Data</b> {n_td} pares"
-        if caidos:
-            fonte_txt += f" · <b>yfinance</b> {len(caidos)} ({', '.join(caidos[:3])})"
-        err = st.session_state.get("td_erro")
-        if err:
-            fonte_txt = f'<b>yfinance</b> — Twelve Data indisponível: {err}'
-    else:
-        fonte_txt = "<b>yfinance</b> (sem chave da Twelve Data)"
     SRC = {"twelvedata": "Twelve Data", "binance": "Binance",
            "coinbase": "Coinbase", "yfinance": "yfinance"}
-    det = " · ".join(f"{SRC.get(k, k)} <b>{v:.1f}min</b>"
-                     for k, v in sorted(lag_fonte.items()))
-    cred = ""
+    varridos = {a["name"] for a in scan_list}
+
+    def chip(rot, val, alerta=False):
+        return (f'<span class="chip{" warn" if alerta else ""}">'
+                f'<span class="ck">{rot}</span><span class="cv">{val}</span></span>')
+
+    cs = []
+    # uma pastilha por fonte: quantos ativos ela serviu e qual o atraso dela
+    for src in sorted(set(_f.get(n, "?") for n in varridos)):
+        qtd = sum(1 for n in varridos if _f.get(n) == src)
+        lag = lag_fonte.get(src)
+        val = f'{qtd} ativo{"s" if qtd != 1 else ""}'
+        if lag is not None:
+            val += f' · {lag:.1f}min'
+        cs.append(chip(SRC.get(src, src), val, alerta=(src == "yfinance")))
+    cs.append(chip("Busca", f"{fetch_s:.1f}s"))
     if TD_KEY:
         usados, lim, dia = td_status()
-        cred = f' · créditos TD <b>{usados}/{lim}</b> no minuto, <b>{dia}</b> hoje (máx. 800)'
-    st.markdown(f'<div class="lat">{fonte_txt} · busca <b>{fetch_s:.1f}s</b> · '
-                f'atraso por fonte: {det}{cred}</div>', unsafe_allow_html=True)
+        cs.append(chip("Créditos TD", f"{usados}/{lim} min · {dia}/800 dia",
+                       alerta=(dia > 700)))
+    if bloqueados:
+        cs.append(chip("Bloqueados", f"{len(bloqueados)}", alerta=True))
+    err = st.session_state.get("td_erro")
+    if err:
+        cs.append(chip("Twelve Data", "indisponível", alerta=True))
+    st.markdown(f'<div class="diag">{"".join(cs)}</div>', unsafe_allow_html=True)
+    if err:
+        st.caption(f"Twelve Data: {err}")
 
     if entries:
         dim = "" if window_open else " stale"
@@ -1040,7 +1142,7 @@ with tab_sig:
                     f"{pl} {ests}. Força {FL[top['force']].lower()}.")
         else:
             fala = ""
-        components.html(f"""
+        html_box(f"""
         <div style="font-family:Inter,sans-serif;margin-top:6px">
           <button id="u" style="background:rgba(0,229,160,.12);color:#7df0c6;
             border:1px solid rgba(0,229,160,.3);border-radius:9px;padding:7px 14px;
@@ -1218,6 +1320,28 @@ with tab_hist:
                     'seleção de período: são os sinais que o app realmente emitiu, apurados pela '
                     'cor da vela em que a entrada valeria. É a amostra mais honesta que existe — '
                     'e a única livre de garimpo de dados.</div>', unsafe_allow_html=True)
+
+    if HIST_REMOTO:
+        err = _gist_err[0]
+        if err:
+            st.markdown(f'<div class="win alert"><span class="pt"></span>'
+                        f'<b>Falha ao sincronizar</b> — {err}. O histórico está só no disco '
+                        f'do container e se perde no próximo rebuild.</div>',
+                        unsafe_allow_html=True)
+        else:
+            st.markdown('<div class="note"><b>Histórico sincronizado.</b> Está espelhado no '
+                        'seu Gist privado, então sobrevive aos reinícios do Streamlit Cloud.'
+                        '</div>', unsafe_allow_html=True)
+    else:
+        st.markdown(
+            '<div class="win alert"><span class="pt"></span><b>Este histórico é temporário.</b> '
+            'O disco do Streamlit Cloud é apagado a cada rebuild do app, então tudo abaixo '
+            'some junto — e sem amostra acumulada o forward test nunca sai de "não conclusivo". '
+            'Para preservar: crie um Gist privado com um arquivo <code>sinais_historico.json</code> '
+            'e um token do GitHub com escopo <code>gist</code>, e adicione '
+            '<code>GITHUB_TOKEN</code> e <code>GIST_ID</code> nos Secrets do app. '
+            'Enquanto isso, baixe o CSV abaixo com frequência.</div>',
+            unsafe_allow_html=True)
 
     st.markdown('<div class="sect">Backup e importação</div>', unsafe_allow_html=True)
     b1, b2, b3 = st.columns([1, 1.4, 1])
