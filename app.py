@@ -469,6 +469,16 @@ hr{border-color:var(--line)}
 .wm span{font-size:.56rem;letter-spacing:.2em;text-transform:uppercase;
   color:var(--mut);font-weight:600;margin-top:3px}
 .vbar{width:1px;height:30px;background:var(--line2);flex:none}
+/* Contador no cabeçalho: o relógio fica onde o olho já procura tempo, e o app
+   deixa de gastar uma faixa inteira só para isso. */
+.cd-meta{min-width:112px}
+.cd-meta .v{font-size:1.02rem;letter-spacing:.01em;transition:color .3s}
+.cd-track{display:block;height:2px;border-radius:2px;background:rgba(255,255,255,.08);
+  margin-top:5px;overflow:hidden}
+.cd-track i{display:block;height:100%;width:0;background:var(--buy);transition:width .9s linear}
+.cd-badge{font-size:.56rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
+  padding:5px 10px;border-radius:999px;background:rgba(0,200,138,.12);color:var(--buy);
+  border:1px solid rgba(0,200,138,.3);animation:lpulse 1.2s ease-in-out infinite}
 /* pastilha Ao vivo / Pausado — é um link, não um widget do Streamlit */
 .livebtn{display:inline-flex;align-items:center;gap:7px;flex:none;text-decoration:none!important;
   font-size:.64rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase;
@@ -660,7 +670,18 @@ div[data-testid="stMetricValue"]{font-family:'IBM Plex Mono',monospace;font-size
 .hero.stale,.card.stale{opacity:.42;filter:saturate(.55)}
 .hero.stale{border-color:var(--line)}
 /* ---------- DIAGNÓSTICO DE DADOS (chips, não log de terminal) ---------- */
-.diag{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:var(--gap-bloco) 0 var(--gap-curto)}
+/* Caixa colapsável do diagnóstico: uma linha quando está tudo certo. */
+.diagbox{margin:var(--gap-curto) 0 var(--gap-bloco)}
+.diagbox summary{list-style:none;cursor:pointer;display:inline-flex;align-items:center;gap:8px;
+  font-size:.7rem;color:var(--mut);font-weight:500;padding:5px 0;user-select:none}
+.diagbox summary::-webkit-details-marker{display:none}
+.diagbox summary:hover{color:var(--ink2)}
+.diagbox summary::after{content:"▾";font-size:.6rem;opacity:.6;transition:transform .15s}
+.diagbox[open] summary::after{transform:rotate(180deg)}
+.diagbox .dot{width:6px;height:6px;border-radius:50%;flex:none}
+.diagbox .dot.ok{background:var(--buy);box-shadow:0 0 0 3px rgba(0,200,138,.14)}
+.diagbox .dot.bad{background:var(--warn);box-shadow:0 0 0 3px rgba(217,164,65,.14)}
+.diag{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:var(--gap-curto) 0 0}
 .chip{display:inline-flex;align-items:center;gap:6px;font-size:.68rem;font-weight:500;
   color:var(--ink2);background:var(--surf2);border:1px solid var(--line);
   border-radius:999px;padding:4px 11px;line-height:1.3}
@@ -710,7 +731,10 @@ div[data-testid="stMetricValue"]{font-family:'IBM Plex Mono',monospace;font-size
    O caminho certo é não deixar a altura mudar. Por isso o min-height abaixo:
    a cada rerun o Streamlit recria o iframe do contador, e enquanto ele não
    carrega o container pode ficar com altura 0, empurrando tudo que vem depois. */
-[data-testid="stElementContainer"]:has(> iframe[title="st.iframe"]){min-height:58px}
+/* O iframe do contador não desenha nada (só roda o script que alimenta o
+   cabeçalho). Altura 0 é rejeitada pela API, então fica 1px e some no CSS. */
+[data-testid="stElementContainer"]:has(> iframe[title="st.iframe"]){min-height:0;
+  height:0;overflow:hidden;margin:0}
 
 /* ---------- BARRA DE CONTROLES ----------
    O <div class="ctrlbar"> não envolve as colunas (o Streamlit as renderiza como
@@ -764,6 +788,23 @@ div[data-testid="stExpander"] summary:hover{color:var(--ink)}
 /* Rodapé discreto. */
 .foot{margin:var(--gap-secao) 0 8px;text-align:center;font-size:.66rem;color:var(--mut);
   border-top:1px solid var(--line);padding-top:16px}
+
+/* Curva da taxa acumulada. */
+.curva{background:var(--surf);border:1px solid var(--line);border-radius:var(--r);
+  padding:var(--pad-card);margin:var(--gap-bloco) 0 var(--gap-curto)}
+.curva .c-head{display:flex;justify-content:space-between;align-items:center;
+  gap:12px;margin-bottom:10px;flex-wrap:wrap}
+.curva .c-head .k{font-size:.58rem;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--mut);font-weight:600}
+.curva .lg{display:inline-flex;align-items:center;gap:6px;font-size:.64rem;color:var(--mut)}
+.curva .lg i.be{width:14px;height:0;border-top:1px dashed var(--warn);display:inline-block}
+.curva svg{width:100%;height:78px;display:block}
+.curva .c-foot{display:flex;justify-content:space-between;margin-top:8px;
+  font-size:.64rem;color:var(--mut)}
+.curva .c-foot .mono{font-family:'IBM Plex Mono',monospace;color:var(--ink2);font-weight:600}
+
+/* Telas largas: 1180px deixava margens enormes sobrando e apertava as tabelas. */
+@media(min-width:1500px){.block-container{max-width:1360px}}
 
 /* Estado vazio do scanner: compacto, é o estado mais comum do app. */
 .empty{display:flex;align-items:center;gap:18px;background:var(--surf);
@@ -1069,6 +1110,10 @@ topbar_slot.markdown(f"""
     <div class="meta"><span class="k">Varredura</span><span class="v">{len(scan_list)} ativos</span></div>
     <div class="meta"><span class="k">Horário de Brasília</span>
       <span class="v mono">{br(now).strftime('%H:%M:%S')}</span></div>
+    <div class="meta cd-meta"><span class="k">Próxima vela</span>
+      <span class="v mono" id="kairo-cd">--:--</span>
+      <span class="cd-track"><i id="kairo-cdfill"></i></span></div>
+    <span id="kairo-cdbadge"></span>
   </div>
   <a class="livebtn {'on' if auto_on else ''}" target="_self"
      href="?live={'0' if auto_on else '1'}"
@@ -1080,31 +1125,26 @@ topbar_slot.markdown(f"""
 # marcador invisível: o CSS usa o irmão seguinte para liberar a roda do mouse
 st.markdown('<div class="wheel-pass"></div>', unsafe_allow_html=True)
 html_box(f"""
-<style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@500;600&family=IBM+Plex+Mono:wght@600&display=swap');
-*{{box-sizing:border-box}} body{{margin:0}}
-.bar{{font-family:'Inter',sans-serif;background:#0D111A;border:1px solid rgba(255,255,255,.06);
- border-radius:12px;padding:11px 20px;display:flex;align-items:center;gap:16px;color:#E9EDF5}}
-.k{{font-size:.56rem;letter-spacing:.14em;color:#6F7B93;font-weight:600;text-transform:uppercase}}
-.t{{font-family:'IBM Plex Mono',monospace;font-size:1.35rem;font-weight:600;font-variant-numeric:tabular-nums}}
-.track{{height:3px;flex:1;border-radius:2px;background:rgba(255,255,255,.07);overflow:hidden}}
-.fill{{height:100%;background:#00C88A}}
-.badge{{font-size:.6rem;font-weight:600;letter-spacing:.08em;padding:4px 10px;border-radius:6px;
- background:rgba(0,200,138,.12);color:#00C88A;border:1px solid rgba(0,200,138,.28)}}
-@keyframes pulse{{0%,100%{{opacity:.5}}50%{{opacity:1}}}}
-</style>
-<div class="bar">
-  <span class="k">Próxima vela</span>
-  <span class="t" id="k">--:--</span>
-  <span id="e"></span>
-  <div class="track"><div class="fill" id="f" style="width:0%"></div></div>
-</div>
-<script>var TF={int(TF)};function t(){{var n=Date.now()/1000,per=TF*60,pos=n%per,l=per-pos,
-m=Math.floor(l/60),s=Math.floor(l%60);
-document.getElementById('k').textContent=(m<10?'0':'')+m+':'+(s<10?'0':'')+s;
-document.getElementById('f').style.width=((pos/per)*100).toFixed(1)+'%';
-document.getElementById('e').innerHTML=pos<{ENTRY_WINDOW}?'<span class="badge" style="animation:pulse 1.1s infinite">ENTRADA VÁLIDA</span>':'';}}
+<style>*{{box-sizing:border-box}} body{{margin:0;background:transparent}}</style>
+<script>
+/* Este iframe não desenha nada: ele é o motor do contador que vive no CABEÇALHO.
+   Como usa srcdoc, é mesma origem do app e escreve direto no DOM do pai. Isso
+   eliminou um bloco inteiro de largura total que só mostrava um relógio. */
+var TF={int(TF)}, JAN={ENTRY_WINDOW};
+var PD=window.parent.document;
+function t(){{
+  var n=Date.now()/1000, per=TF*60, pos=n%per, l=per-pos;
+  var m=Math.floor(l/60), s=Math.floor(l%60);
+  var el=PD.getElementById('kairo-cd'); if(!el) return;
+  el.textContent=(m<10?'0':'')+m+':'+(s<10?'0':'')+s;
+  var f=PD.getElementById('kairo-cdfill');
+  if(f) f.style.width=((pos/per)*100).toFixed(1)+'%';
+  var b=PD.getElementById('kairo-cdbadge');
+  if(b) b.innerHTML = pos<JAN ? '<span class="cd-badge">Entrada válida</span>' : '';
+  el.style.color = pos<JAN ? '#00C88A' : '';
+}}
 t();setInterval(t,1000);
+
 /* --- Preservação da rolagem entre reruns ---------------------------------
    O Streamlit rola num container interno (stMain), não na janela. A cada
    auto-refresh o conteúdo é reconstruído e a posição pode voltar ao topo ou
@@ -1127,7 +1167,7 @@ try{{
     }}
   }}
 }}catch(e){{}}
-</script>""", height=58)
+</script>""", height=1)
 
 def _short(nm):
     return nm.split("·")[0].strip()
@@ -1417,7 +1457,18 @@ with tab_sig:
     err = st.session_state.get("td_erro")
     if err:
         cs.append(chip("Twelve Data", "indisponível", alerta=True))
-    st.markdown(f'<div class="diag">{"".join(cs)}</div>', unsafe_allow_html=True)
+    # Resumo colapsado: o detalhe das fontes só importa quando algo está errado.
+    # Aberto por padrão apenas se houver alerta.
+    problema = bool(err) or bool(bloqueados) or any(
+        v == "yfinance" for k, v in _f.items() if k in varridos)
+    lag_pior = max(lag_fonte.values()) if lag_fonte else 0.0
+    resumo = ("Fontes com problema" if problema
+              else f"Fontes OK · atraso {lag_pior:.1f}min"
+                   + (f" · sinal +{tl:.1f}s" if tl is not None else ""))
+    st.markdown(
+        f'<details class="diagbox"{" open" if problema else ""}>'
+        f'<summary><span class="dot {"bad" if problema else "ok"}"></span>{resumo}</summary>'
+        f'<div class="diag">{"".join(cs)}</div></details>', unsafe_allow_html=True)
     if err:
         st.caption(f"Twelve Data: {err}")
 
@@ -1564,23 +1615,40 @@ with tab_perf:
 
         # Ordenado pela taxa do período, não em ordem alfabética: a pergunta é
         # "qual funciona melhor", então a resposta tem de estar na primeira linha.
-        rows = ""
-        for name in ranked:
-            p = perf[name]
-            tag = ""
-            if name == top:
-                tag = ('<span class="tagmini">VANTAGEM COMPROVADA</span>' if proven
-                       else '<span class="tagmini">MAIOR TAXA · não comprovada</span>')
-            on = ' <span class="tagmini">em uso</span>' if name in sel_strats else ""
-            rows += (f'<tr class="{"on" if name in sel_strats else ""}">'
-                     f'<td class="nm">{name}{tag}{on}</td>'
-                     f'<td>{cell(*p["hoje"])}</td><td>{cell(*p["per"])}</td></tr>')
+        ver_hoje = st.toggle("Mostrar coluna “Hoje”", value=False, key="tg_hoje",
+                             help="O recorte do dia costuma ter poucas dezenas de "
+                                  "operações — quase sempre ruído. Fica oculto por padrão.")
 
-        st.markdown(f'<div class="sect">Desempenho · {TF_LABEL[TF]} · payout {payout_lbl} '
-                    f'· breakeven {BE:.2f}% · ordenado pela taxa do período</div>',
-                    unsafe_allow_html=True)
-        st.markdown(f'<table class="tbl"><tr><th>Estratégia</th><th>Hoje</th>'
-                    f'<th>Período ({TF_PERIOD[interval]})</th></tr>{rows}</table>', unsafe_allow_html=True)
+        def linhas(nomes):
+            out = ""
+            for name in nomes:
+                p = perf[name]
+                tag = ""
+                if name == top:
+                    tag = ('<span class="tagmini">VANTAGEM COMPROVADA</span>' if proven
+                           else '<span class="tagmini">MAIOR TAXA · não comprovada</span>')
+                td_hoje = f'<td>{cell(*p["hoje"])}</td>' if ver_hoje else ""
+                out += (f'<tr class="{"on" if name in sel_strats else ""}">'
+                        f'<td class="nm">{name}{tag}</td>{td_hoje}'
+                        f'<td>{cell(*p["per"])}</td></tr>')
+            return out
+
+        cab = ('<tr><th>Estratégia</th>'
+               + (f'<th>Hoje</th>' if ver_hoje else "")
+               + f'<th>Período ({TF_PERIOD[interval]})</th></tr>')
+
+        # Em uso primeiro, separadas do resto: é a informação que você consulta
+        # antes de operar. O resto é catálogo.
+        em_uso = [n for n in ranked if n in sel_strats]
+        outras = [n for n in ranked if n not in sel_strats]
+
+        st.markdown(f'<div class="sect">Em uso agora · {TF_LABEL[TF]} · payout {payout_lbl} '
+                    f'· breakeven {BE:.2f}%</div>', unsafe_allow_html=True)
+        st.markdown(f'<table class="tbl">{cab}{linhas(em_uso)}</table>', unsafe_allow_html=True)
+
+        st.markdown('<div class="sect">Todas as estratégias · ordenado pela taxa do período'
+                    '</div>', unsafe_allow_html=True)
+        st.markdown(f'<table class="tbl">{cab}{linhas(outras)}</table>', unsafe_allow_html=True)
         st.markdown('<div class="note"><b>Como ler:</b> a taxa é medida operando toda vez que a estratégia '
                     'dispara, entrando na <b>abertura da vela seguinte</b>. Acerto pela cor da vela: COMPRA '
                     'vence se fechar <b style="color:#00e5a0">verde</b>, VENDA se fechar '
@@ -1628,6 +1696,56 @@ with tab_hist:
             + stat("Taxa do forward test", taxa_txt, sub, tcls)
             + '</div>', unsafe_allow_html=True)
         st.caption(f"Breakeven {BE:.2f}% com payout {payout_lbl}.")
+
+        # ---- curva da taxa acumulada ----
+        # Mostra se o número é estável ou fruto de uma sequência. Uma taxa que
+        # sobe e desce muito com a amostra crescendo é sinal de que ainda não há
+        # informação suficiente, por mais bonito que esteja o valor final.
+        seq = [h for h in sorted(hist, key=lambda x: x["ts"])
+               if h["res"] in ("ganhou", "perdeu")]
+        if len(seq) >= 8:
+            acum, w = [], 0
+            for i, h in enumerate(seq, 1):
+                w += h["res"] == "ganhou"
+                acum.append(w / i * 100)
+            W, H, PADL = 100.0, 34.0, 0.0
+            lo_y = min(min(acum), BE) - 4
+            hi_y = max(max(acum), BE) + 4
+            rng = max(hi_y - lo_y, 1e-6)
+
+            def _y(v):
+                return H - (v - lo_y) / rng * H
+
+            pts = " ".join(f"{PADL + i / (len(acum) - 1) * W:.2f},{_y(v):.2f}"
+                           for i, v in enumerate(acum))
+            y_be = _y(BE)
+            cor = "var(--buy)" if acum[-1] >= BE else "var(--sell)"
+            st.markdown(
+                f'<div class="curva"><div class="c-head">'
+                f'<span class="k">Taxa acumulada ao longo das operações</span>'
+                f'<span class="lg"><i class="be"></i>breakeven {BE:.1f}%</span></div>'
+                f'<svg viewBox="0 0 100 {H}" preserveAspectRatio="none">'
+                f'<line x1="0" y1="{y_be:.2f}" x2="100" y2="{y_be:.2f}" '
+                f'stroke="var(--warn)" stroke-width=".4" stroke-dasharray="2 2" opacity=".8"/>'
+                f'<polyline points="{pts}" fill="none" stroke="{cor}" stroke-width=".9" '
+                f'vector-effect="non-scaling-stroke" stroke-linejoin="round"/></svg>'
+                f'<div class="c-foot"><span>1ª op</span>'
+                f'<span class="mono">{acum[-1]:.1f}% em {len(acum)} ops</span></div></div>',
+                unsafe_allow_html=True)
+
+        # ---- filtros ----
+        f1, f2 = st.columns([2, 1])
+        with f1:
+            todas_est = sorted({s for h in hist for s in h["strats"]})
+            f_est = st.multiselect("Filtrar por estratégia", todas_est, default=[],
+                                   placeholder="Todas as estratégias")
+        with f2:
+            f_res = st.multiselect("Filtrar por resultado",
+                                   ["ganhou", "perdeu", "empate", "aguardando"], default=[],
+                                   placeholder="Todos os resultados")
+        vis = [h for h in hist
+               if (not f_est or any(s in f_est for s in h["strats"]))
+               and (not f_res or (h["res"] or "aguardando") in f_res)]
 
         VTXT = {"acima": ('v-good', 'acima do breakeven'),
                 "abaixo": ('v-bad', 'abaixo do breakeven'),
@@ -1686,7 +1804,7 @@ with tab_hist:
                        "o esperado, não um defeito.")
 
         rows = ""
-        for h in sorted(hist, key=lambda x: x["ts"], reverse=True)[:60]:
+        for h in sorted(vis, key=lambda x: x["ts"], reverse=True)[:60]:
             if h["res"] == "ganhou":
                 r = '<span class="verd v-good">ganhou</span>'
             elif h["res"] == "perdeu":
@@ -1706,7 +1824,7 @@ with tab_hist:
                      f'<td class="n">{FL[h["force"]]}</td>'
                      f'<td>{chips_h}</td>'
                      f'<td class="n mono">{lag_txt}</td><td>{r}</td></tr>')
-        st.markdown('<div class="sect">Sinais desta sessão</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="sect">Sinais registrados · {len(vis)} de {len(hist)}</div>', unsafe_allow_html=True)
         st.markdown(f'<table class="tbl"><tr><th>Vela</th><th>Ativo</th><th>Direção</th>'
                     f'<th>Força</th><th>Estratégias</th><th>Atraso</th>'
                     f'<th>Resultado</th></tr>{rows}</table>',
