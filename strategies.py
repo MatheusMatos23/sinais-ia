@@ -134,12 +134,51 @@ def strat_fade_rompimento(d: pd.DataFrame) -> pd.Series:
     return -strat_rompimento(d)
 
 
+# F · EXAUSTÃO — após N velas seguidas no mesmo sentido, opera CONTRA.
+def strat_exaustao(d: pd.DataFrame, n: int = 3) -> pd.Series:
+    up_streak = d["bull"].rolling(n).sum() == n
+    dn_streak = d["bear"].rolling(n).sum() == n
+    move = (d["Close"] - d["Close"].shift(n)).abs() / d["avg_body"].replace(0, np.nan)
+    mag = (move / 4).clip(0, 1).fillna(0)
+    score = pd.Series(0.0, index=d.index)
+    score[up_streak] = -(0.55 + 0.45 * mag[up_streak])
+    score[dn_streak] = 0.55 + 0.45 * mag[dn_streak]
+    return score.fillna(0.0)
+
+
+# G · FADE DE VELA EXTREMA — vela com range >= 2x a média: opera contra o sentido dela.
+def strat_fade_extremo(d: pd.DataFrame) -> pd.Series:
+    ratio = (d["rng"] / d["rng"].rolling(20).mean().replace(0, np.nan)).fillna(0)
+    big = ratio >= 2.0
+    up, dn = big & d["bull"], big & d["bear"]
+    mag = ((ratio - 2) / 2).clip(0, 1).fillna(0)
+    score = pd.Series(0.0, index=d.index)
+    score[up] = -(0.55 + 0.45 * mag[up])
+    score[dn] = 0.55 + 0.45 * mag[dn]
+    return score.fillna(0.0)
+
+
+# H · Z-SCORE — preço muito longe da média de 20: aposta na volta (sem exigir RSI extremo).
+def strat_zscore(d: pd.DataFrame, z: float = 1.8) -> pd.Series:
+    sd = d["Close"].rolling(20).std(ddof=0).replace(0, np.nan)
+    zs = ((d["Close"] - d["bb_mid"]) / sd).fillna(0)
+    lo, hi = zs <= -z, zs >= z
+    mag = ((zs.abs() - z) / 1.5).clip(0, 1).fillna(0)
+    score = pd.Series(0.0, index=d.index)
+    score[lo] = 0.55 + 0.45 * mag[lo]
+    score[hi] = -(0.55 + 0.45 * mag[hi])
+    return score.fillna(0.0)
+
+
 STRATEGIES = {
     "A · Tendência": strat_tendencia,
     "B · Reversão": strat_reversao,
     "C · Rompimento": strat_rompimento,
     "D · Confluência multi-TF": strat_confluencia,
     "E · Fade de rompimento": strat_fade_rompimento,
+    "F · Exaustão": strat_exaustao,
+    "G · Fade vela extrema": strat_fade_extremo,
+    "H · Z-score reversão": strat_zscore,
 }
 NEEDS_TF = {"D · Confluência multi-TF"}
 
@@ -160,25 +199,34 @@ def classify(score: float):
 
 
 # ----------------------------------------------------------------------
-def backtest(d: pd.DataFrame, score: pd.Series) -> dict:
+def backtest(d: pd.DataFrame, score: pd.Series, tie_mode: str = "refund") -> dict:
     """
     Entrada na ABERTURA da barra seguinte; acerto pela COR dessa vela.
-    Retorna trades, wins, ties, win_rate.
+
+    tie_mode:
+      "refund" (padrão) — vela que fecha igual à abertura devolve a aposta:
+                          o empate NÃO entra no cálculo da taxa de acerto.
+                          É como a maioria das corretoras trata o empate.
+      "loss"            — empate conta como derrota (mais conservador).
+
+    Retorna trades (avaliados), wins, ties, win_rate e trades_brutos.
     """
     o_next = d["Open"].shift(-1)
     c_next = d["Close"].shift(-1)
     sig = score.where(score.abs() >= MIN_SCORE, 0.0)
     valid = (sig != 0) & o_next.notna() & c_next.notna()
     if not valid.any():
-        return {"trades": 0, "wins": 0, "ties": 0, "win_rate": float("nan")}
+        return {"trades": 0, "wins": 0, "ties": 0, "raw": 0, "win_rate": float("nan")}
     up = c_next > o_next
     dn = c_next < o_next
     tie = c_next == o_next
-    win = np.where(sig > 0, up, dn)
-    n = int(valid.sum())
-    w = int((pd.Series(win, index=d.index) & valid).sum())
+    win = pd.Series(np.where(sig > 0, up, dn), index=d.index)
+    raw = int(valid.sum())
     t = int((tie & valid).sum())
-    return {"trades": n, "wins": w, "ties": t, "win_rate": w / n if n else float("nan")}
+    w = int((win & valid).sum())
+    n = raw - t if tie_mode == "refund" else raw
+    return {"trades": n, "wins": w, "ties": t, "raw": raw,
+            "win_rate": (w / n) if n else float("nan")}
 
 
 def backtest_all(d: pd.DataFrame, tf: str) -> dict:
