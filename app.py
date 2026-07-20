@@ -154,7 +154,11 @@ def _td_to_df(values):
 
 # --- Orçamento de créditos (plano grátis: 8 por minuto, 800 por dia) ---
 # Módulo-global: compartilhado por TODAS as abas/sessões do mesmo servidor.
-TD_LIMIT_MIN = 8
+# A janela da Twelve Data não começa junto com a nossa: se contarmos 60 s exatos,
+# um scan no fim de um minuto + outro no início do seguinte ainda somam >8 para eles.
+# Por isso a janela local é de 75 s e o teto é 7 (margem de 1 crédito).
+TD_LIMIT_MIN = 7
+TD_WINDOW_S = 75
 _td_lock = threading.Lock()
 _td_spent = deque()          # timestamps dos créditos gastos (janela de 60 s)
 _td_day = [0, None]          # [créditos no dia, data UTC]
@@ -165,7 +169,7 @@ def td_budget(n):
     now = time.time()
     today = datetime.now(timezone.utc).date()
     with _td_lock:
-        while _td_spent and now - _td_spent[0] > 60:
+        while _td_spent and now - _td_spent[0] > TD_WINDOW_S:
             _td_spent.popleft()
         if _td_day[1] != today:
             _td_day[0], _td_day[1] = 0, today
@@ -180,7 +184,7 @@ def td_budget(n):
 def td_status():
     now = time.time()
     with _td_lock:
-        while _td_spent and now - _td_spent[0] > 60:
+        while _td_spent and now - _td_spent[0] > TD_WINDOW_S:
             _td_spent.popleft()
         return len(_td_spent), TD_LIMIT_MIN, _td_day[0]
 
