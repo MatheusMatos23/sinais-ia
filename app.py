@@ -603,6 +603,13 @@ div[data-testid="stMetricValue"]{font-family:'IBM Plex Mono',monospace;font-size
   position:sticky;top:0;z-index:30;background:var(--bg);
   box-shadow:0 1px 0 var(--line), 0 8px 12px -10px rgba(0,0,0,.9)}
 [data-testid="stTabs"] [role="tabpanel"]{padding-top:4px}
+
+/* Ancoragem de rolagem: o topo da página muda de altura a cada rerun (o texto
+   "já se passaram Xs", as pastilhas de diagnóstico). O navegador tenta
+   compensar mexendo sozinho na posição, e isso vira tremida/salto no meio da
+   leitura das tabelas longas. Desligado. */
+[data-testid="stMain"]{overflow-anchor:none}
+[data-testid="stMain"] *{overflow-anchor:none}
 div[data-testid="stExpander"]{margin-bottom:4px}
 @media(max-width:900px){.hero{grid-template-columns:1fr}.hero-side{border-left:0;border-top:1px solid var(--line)}}
 </style>
@@ -880,7 +887,30 @@ m=Math.floor(l/60),s=Math.floor(l%60);
 document.getElementById('k').textContent=(m<10?'0':'')+m+':'+(s<10?'0':'')+s;
 document.getElementById('f').style.width=((pos/per)*100).toFixed(1)+'%';
 document.getElementById('e').innerHTML=pos<{ENTRY_WINDOW}?'<span class="badge" style="animation:pulse 1.1s infinite">ENTRADA VÁLIDA</span>':'';}}
-t();setInterval(t,1000);</script>""", height=58)
+t();setInterval(t,1000);
+/* --- Preservação da rolagem entre reruns ---------------------------------
+   O Streamlit rola num container interno (stMain), não na janela. A cada
+   auto-refresh o conteúdo é reconstruído e a posição pode voltar ao topo ou
+   pular — o que só incomoda nas abas longas (Desempenho e Histórico), porque
+   na aba Sinais tudo cabe na tela. Este iframe usa srcdoc, então é MESMA
+   ORIGEM do app e consegue falar com window.parent.
+   Guarda a posição a cada rolagem e devolve depois do rerun, mas só quando o
+   container voltou de fato para o topo — assim nunca briga com você. */
+try{{
+  var P=window.parent, PD=P.document, K='sinaisScrollTop';
+  var mainEl=PD.querySelector('[data-testid="stMain"]');
+  if(mainEl){{
+    var salvo=parseInt(P.sessionStorage.getItem(K)||'0',10);
+    if(salvo>0&&mainEl.scrollTop===0){{mainEl.scrollTop=salvo;}}
+    if(!mainEl.__hookScroll){{
+      mainEl.__hookScroll=1;
+      mainEl.addEventListener('scroll',function(){{
+        P.sessionStorage.setItem(K,String(Math.round(mainEl.scrollTop)));
+      }},{{passive:true}});
+    }}
+  }}
+}}catch(e){{}}
+</script>""", height=58)
 
 def _short(nm):
     return nm.split("·")[0].strip()
