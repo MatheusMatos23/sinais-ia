@@ -459,7 +459,8 @@ hr{border-color:var(--line)}
 .hdr{display:flex;align-items:center;justify-content:space-between;gap:22px;
   background:linear-gradient(180deg,rgba(255,255,255,.028),transparent 60%),var(--surf);
   border:1px solid var(--line);border-radius:var(--r2);
-  padding:var(--pad-card);margin-bottom:var(--gap-bloco)}
+  padding:var(--pad-card);margin-bottom:var(--gap-bloco);
+  position:relative;overflow:hidden}
 .hdr-l{display:flex;align-items:center;gap:22px;flex-wrap:wrap}
 /* ---- marca ---- */
 .brand{display:flex;align-items:center;gap:11px}
@@ -476,7 +477,6 @@ hr{border-color:var(--line)}
 .cd-meta .v{font-size:1.02rem;letter-spacing:.01em;transition:color .3s}
 /* A barra de progresso atravessa o rodapé do cabeçalho inteiro. Dentro da
    métrica ela desalinhava a linha de base em relação às outras. */
-.hdr{position:relative;overflow:hidden}
 .hdr-prog{position:absolute;left:0;right:0;bottom:0;height:2px;
   background:rgba(255,255,255,.05)}
 .hdr-prog i{display:block;height:100%;width:0;background:var(--buy);
@@ -605,12 +605,26 @@ div[data-testid="stExpander"] summary:hover{color:var(--ink)}
 .card .sc{font-size:.6rem;padding:3px 7px}
 
 /* ---------- TABELA ---------- */
-.tbl{width:100%;border-collapse:collapse;font-size:.83rem}
+/* ---------- TABELAS ----------
+   DEFINIÇÃO ÚNICA. Havia três blocos .tbl espalhados pelo arquivo, com
+   border-collapse alternando entre collapse e separate — e o cabeçalho sticky
+   dentro de um cartão com overflow:hidden. Essa combinação é justamente a que
+   quebra: com border-collapse:collapse o `th` sticky descola das bordas e
+   invade as linhas, e o overflow:hidden impede a fixação funcionar.
+   Cabeçalho fixo foi removido: as abas já são sticky e dão a referência. */
+.tbl{width:100%;font-size:.83rem;border-collapse:separate;border-spacing:0;
+  background:var(--surf);border:1px solid var(--line);border-radius:var(--r2);
+  overflow:hidden;margin-bottom:var(--gap-bloco)}
+.tbl th{background:var(--surf2);border-bottom:1px solid var(--line2);
+  padding:11px 16px}
+.tbl td{padding:14px 16px;border-bottom:1px solid var(--line)}
+.tbl tr:last-child td{border-bottom:0}
+.tbl tr:nth-child(even) td{background:rgba(255,255,255,.012)}
+.tbl tr:hover td{background:rgba(255,255,255,.035)}
+.tbl tr.on td{background:rgba(0,200,138,.05);box-shadow:inset 2px 0 0 var(--buy)}
+.tbl tr.on:hover td{background:rgba(0,200,138,.08)}
 .tbl th{text-align:left;font-size:.56rem;letter-spacing:.14em;color:var(--mut);font-weight:600;
   text-transform:uppercase;padding:0 14px 10px;border-bottom:1px solid var(--line)}
-.tbl td{padding:13px 14px;border-bottom:1px solid var(--line)}
-.tbl tr:hover td{background:rgba(255,255,255,.014)}
-.tbl tr.on td{background:rgba(0,200,138,.035)}
 .tbl .nm{font-weight:600;color:var(--ink)}
 .wr{font-family:'IBM Plex Mono',monospace;font-weight:600;font-size:.98rem;font-variant-numeric:tabular-nums}
 .good{color:var(--buy)} .bad{color:var(--sell)} .mid{color:var(--ink2)}
@@ -786,12 +800,6 @@ div[data-testid="stMetricValue"]{font-family:'IBM Plex Mono',monospace;font-size
 [data-testid="stTabs"] [data-baseweb="tab-highlight"],
 [data-testid="stTabs"] [data-baseweb="tab-border"]{display:none!important}
 
-/* Tabelas: cabeçalho fixo ao rolar, zebra sutil e linha destacada no hover. */
-.tbl{border-collapse:separate;border-spacing:0}
-.tbl th{position:sticky;top:60px;z-index:9;background:var(--bg);
-  backdrop-filter:blur(6px);box-shadow:0 1px 0 var(--line)}
-.tbl tbody tr:hover td,.tbl tr:hover td{background:rgba(255,255,255,.022)}
-.tbl tr.on:hover td{background:rgba(0,200,138,.06)}
 
 /* Botões: acabamento consistente com os cartões. */
 .stButton>button{background:var(--surf2);border:1px solid var(--line2);border-radius:10px;
@@ -818,19 +826,6 @@ div[data-testid="stExpander"] summary:hover{color:var(--ink)}
 [data-testid="stHorizontalBlock"]{transition:none!important}
 [data-stale="true"]{opacity:1!important;transition:none!important;filter:none!important}
 
-/* ---------- TABELAS COM ACABAMENTO DE PRODUTO ----------
-   Antes eram linhas soltas sobre o fundo da página. Agora cada tabela é um
-   cartão: borda, cantos arredondados, cabeçalho com fundo próprio e zebra. */
-.tbl{background:var(--surf);border:1px solid var(--line);border-radius:var(--r2);
-  overflow:hidden;box-shadow:0 1px 0 rgba(255,255,255,.02) inset}
-.tbl th{background:var(--surf2);border-bottom:1px solid var(--line2);
-  padding:11px 16px;color:var(--mut)}
-.tbl td{padding:14px 16px;border-bottom:1px solid var(--line)}
-.tbl tr:last-child td{border-bottom:0}
-.tbl tbody tr:nth-child(even) td,.tbl tr:nth-child(even) td{background:rgba(255,255,255,.012)}
-.tbl tr.on td{background:rgba(0,200,138,.05);box-shadow:inset 2px 0 0 var(--buy)}
-.tbl tr:hover td{background:rgba(255,255,255,.035)}
-.tbl tr.on:hover td{background:rgba(0,200,138,.08)}
 /* posição na primeira coluna, como ranking */
 .tbl .nm{position:relative}
 .rankn{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;
@@ -953,7 +948,6 @@ div[data-testid="stExpander"]{margin:2px 0 var(--gap-curto)}
 [data-testid="stCaptionContainer"] p{font-size:.72rem!important;color:var(--mut)!important;
   line-height:1.5!important;margin:0!important}
 /* Tabela é um bloco como qualquer outro: mesma distância do que vem antes/depois */
-.tbl{margin-bottom:var(--gap-bloco)}
 /* Dois títulos de seção seguidos não precisam do respiro cheio duas vezes */
 .sect:first-child{margin-top:var(--gap-curto)}
 @media(max-width:820px){
