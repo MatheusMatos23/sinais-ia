@@ -26,7 +26,7 @@ from strategies import (STRATEGIES, add_indicators, score_of, classify,
 
 socket.setdefaulttimeout(8)
 st.set_page_config(page_title="Sinais IA", page_icon="⚡", layout="wide",
-                   initial_sidebar_state="expanded")
+                   initial_sidebar_state="collapsed")
 
 ASSETS = [
     {"name": "EUR/USD", "yf": "EURUSD=X", "cur": ["EUR", "USD"], "type": "fx", "voz": "Euro Dólar"},
@@ -199,45 +199,52 @@ div[role="radiogroup"] label{background:var(--surf);border:1px solid var(--line)
 .stTabs [data-baseweb="tab"]{background:transparent;border-radius:9px 9px 0 0;padding:9px 18px;
  font-weight:700;font-size:.85rem;color:var(--mut)}
 .stTabs [aria-selected="true"]{background:var(--surf);color:var(--ink)}
+.ctrlbar{margin-top:10px}
+div[data-testid="stExpander"]{border:1px solid var(--line);border-radius:13px;background:var(--surf)}
+div[data-testid="stExpander"] summary{font-weight:700;font-size:.85rem}
+div[data-testid="stMetric"]{background:var(--surf);border:1px solid var(--line);
+ border-radius:12px;padding:12px 14px}
+div[data-testid="stMetricValue"]{font-family:'JetBrains Mono',monospace;font-size:1.4rem}
+.stMultiSelect [data-baseweb="tag"]{background:rgba(0,229,160,.14);border:1px solid rgba(0,229,160,.3)}
 </style>
 """, unsafe_allow_html=True)
 
-# ============================== AJUSTES (sidebar) ==============================
-with st.sidebar:
-    st.markdown('<div class="tb-brand"><span class="dot"></span>Sinais IA</div>', unsafe_allow_html=True)
-    st.caption("Scanner multi-estratégia")
-    st.divider()
-
-    st.markdown("**Operação**")
-    tf_label = st.radio("Timeframe", ["1 min", "5 min", "15 min"], index=1, horizontal=True)
+# ============================== CONTROLES (no corpo da página) ==============================
+topbar_slot = st.empty()          # a barra de status é preenchida depois (precisa dos dados)
+st.markdown('<div class="ctrlbar">', unsafe_allow_html=True)
+cc1, cc2, cc3 = st.columns([1.05, 2.1, 1.05])
+with cc1:
+    tf_label = st.radio("⏱️ Timeframe", ["1 min", "5 min", "15 min"], index=1, horizontal=True)
     TF = {"1 min": "1", "5 min": "5", "15 min": "15"}[tf_label]
+with cc2:
     default_sel = [k for k in ("G · Fade vela extrema", "J · Z-score forte", "K · Reversão dupla")
                    if k in STRATEGIES]
-    sel_strats = st.multiselect("Estratégias ativas", list(STRATEGIES), default=default_sel,
-                                placeholder="Escolha uma ou mais")
+    sel_strats = st.multiselect("🎯 Estratégias ativas (escolha uma ou mais)",
+                                list(STRATEGIES), default=default_sel,
+                                placeholder="Escolha uma ou mais estratégias")
     if not sel_strats:
         sel_strats = default_sel or [list(STRATEGIES)[0]]
-    min_force = st.select_slider("Força mínima", options=["FRACA", "MÉDIA", "FORTE"], value="FRACA")
-    only_conf = st.toggle("Só entradas com 2+ estratégias", value=False)
+with cc3:
+    min_force = st.select_slider("💪 Força mínima", options=["FRACA", "MÉDIA", "FORTE"], value="FRACA")
+st.markdown('</div>', unsafe_allow_html=True)
 
-    st.divider()
-    st.markdown("**Áudio**")
-    audio_on = st.toggle("🔊 Aviso por voz na entrada", value=False)
-    if audio_on:
-        st.caption("O navegador exige um clique antes de liberar som — use o botão na aba Sinais.")
-
-    st.divider()
-    st.markdown("**Análise**")
-    payout_lbl = st.radio("Payout da corretora", ["80%", "90%"], index=0, horizontal=True)
-    PAYOUT = 0.80 if payout_lbl == "80%" else 0.90
-    BE = breakeven(PAYOUT) * 100
-    st.caption(f"Breakeven: **{BE:.2f}%** — só há vantagem se todo o intervalo ficar acima disso.")
-
-    st.divider()
-    with st.expander("Avançado"):
+with st.expander("⚙️  Mais opções — filtros, áudio, payout e atualização"):
+    o1, o2, o3 = st.columns(3)
+    with o1:
+        st.markdown("**Filtros**")
+        only_conf = st.toggle("Só entradas com 2+ estratégias", value=False)
         show_closed = st.toggle("Incluir pares fora de sessão", value=False)
+    with o2:
+        st.markdown("**Áudio**")
+        audio_on = st.toggle("🔊 Aviso por voz na entrada", value=False)
+        st.caption("O navegador exige um clique para liberar som — o botão aparece na aba Sinais.")
+    with o3:
+        st.markdown("**Análise e atualização**")
+        payout_lbl = st.radio("Payout da corretora", ["80%", "90%"], index=0, horizontal=True)
         auto_on = st.toggle("Atualização automática", value=True)
         every = st.slider("Intervalo (s)", 10, 60, 15, step=5, disabled=not auto_on)
+PAYOUT = 0.80 if payout_lbl == "80%" else 0.90
+BE = breakeven(PAYOUT) * 100
 
 if auto_on:
     st_autorefresh(interval=every * 1000, key="auto")
@@ -311,7 +318,7 @@ if market_open(now):
 else:
     sess = '<span class="chip off">fim de semana</span>'
     status = '<span class="chip off">FOREX FECHADO</span>'
-st.markdown(f"""
+topbar_slot.markdown(f"""
 <div class="topbar">
   <div class="tb-brand"><span class="dot"></span>Sinais IA</div>
   <div class="tb-sep"></div>
@@ -340,16 +347,51 @@ document.getElementById('pb').style.width=((pos/per)*100).toFixed(1)+'%';
 document.getElementById('ent').innerHTML=pos<12?'<span style="font-family:Inter,sans-serif;font-weight:800;font-size:.7rem;letter-spacing:1px;padding:5px 12px;border-radius:999px;color:#04120d;background:linear-gradient(90deg,#00e5a0,#22d3ee);animation:np 1s infinite">● NOVA ENTRADA</span>':'';}}
 t();setInterval(t,1000);</script>""", height=60)
 
-tab_sig, tab_perf = st.tabs(["📡  Sinais", "📊  Desempenho"])
+def _short(nm):
+    return nm.split("·")[0].strip()
+
+
+# ---------- registra os sinais emitidos e apura o resultado pela cor da vela ----------
+def record_and_resolve(entries, data, minutes):
+    hist = st.session_state.setdefault("hist", [])
+    ck = candle_key(minutes)
+    start = pd.Timestamp(ck * minutes * 60, unit="s")     # abertura da vela da entrada
+    seen = {(h["asset"], h["dir"], h["ck"]) for h in hist}
+    for e in entries:
+        k = (e["a"]["name"], e["dir"], ck)
+        if k not in seen:
+            hist.append({"ck": ck, "ts": start, "asset": e["a"]["name"], "dir": e["dir"],
+                         "force": e["force"], "strats": [_short(s) for s in e["strats"]],
+                         "res": None})
+            seen.add(k)
+    for h in hist:                                        # apura o que já fechou
+        if h["res"] is not None:
+            continue
+        df = data.get(h["asset"])
+        if df is None or len(df) == 0:
+            continue
+        ts = h["ts"]
+        if ts in df.index and df.index[-1] > ts:
+            row = df.loc[ts]
+            op, cl = float(row["Open"]), float(row["Close"])
+            if cl == op:
+                h["res"] = "empate"
+            else:
+                venceu = (cl > op) == (h["dir"] == "COMPRA")
+                h["res"] = "ganhou" if venceu else "perdeu"
+    if len(hist) > 300:
+        del hist[:len(hist) - 300]
+    return hist
+
+
+hist = record_and_resolve(entries, data, minutes)
+
+tab_sig, tab_perf, tab_hist = st.tabs(["📡  Sinais", "📊  Desempenho", "📜  Histórico"])
 
 
 def bars(f):
     n = FORCE_ORDER.get(f, 0)
     return "".join(f'<span class="b {"on" if i < n else ""}"></span>' for i in range(3))
-
-
-def _short(nm):
-    return nm.split("·")[0].strip()
 
 
 def chips(e, big=False):
@@ -471,5 +513,59 @@ with tab_perf:
                 '<b>toda</b> a faixa ficar acima do breakeven — quando ela cruza, o resultado é '
                 '<b>não conclusivo</b> e escolher pela maior taxa é perseguir ruído.</div>',
                 unsafe_allow_html=True)
+
+# ============================== ABA HISTÓRICO ==============================
+with tab_hist:
+    if not hist:
+        st.markdown('<div class="sect">HISTÓRICO DE SINAIS</div>', unsafe_allow_html=True)
+        st.caption("Ainda não há sinais registrados nesta sessão. Cada entrada que aparecer "
+                   "será gravada aqui e o resultado apurado quando a vela fechar.")
+    else:
+        fechados = [h for h in hist if h["res"] in ("ganhou", "perdeu")]
+        g = sum(1 for h in fechados if h["res"] == "ganhou")
+        emp = sum(1 for h in hist if h["res"] == "empate")
+        abertos = sum(1 for h in hist if h["res"] is None)
+        taxa = (g / len(fechados) * 100) if fechados else float("nan")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Sinais registrados", len(hist))
+        m2.metric("Resolvidos", len(fechados))
+        m3.metric("Acertos", g)
+        m4.metric("Taxa da sessão", f"{taxa:.1f}%" if fechados else "—")
+        if fechados:
+            p, lo, hi = wilson_ci(g, len(fechados))
+            v = verdict(g, len(fechados), PAYOUT)
+            txt = {"acima": "acima do breakeven", "abaixo": "abaixo do breakeven",
+                   "inconclusivo": "não conclusivo", "sem dados": "sem dados"}[v]
+            st.caption(f"IC95 {lo*100:.0f}–{hi*100:.0f}% · **{txt}** "
+                       f"(breakeven {BE:.2f}% com payout {payout_lbl}) · "
+                       f"{emp} empate(s) devolvido(s) · {abertos} aguardando fechar")
+
+        rows = ""
+        for h in sorted(hist, key=lambda x: x["ts"], reverse=True)[:60]:
+            if h["res"] == "ganhou":
+                r = '<span class="verd v-good">ganhou</span>'
+            elif h["res"] == "perdeu":
+                r = '<span class="verd v-bad">perdeu</span>'
+            elif h["res"] == "empate":
+                r = '<span class="verd v-mid">empate</span>'
+            else:
+                r = '<span class="verd v-mid">aguardando</span>'
+            dcls = "good" if h["dir"] == "COMPRA" else "bad"
+            arw = "▲" if h["dir"] == "COMPRA" else "▼"
+            chips_h = "".join(f'<span class="sc">{s}</span>' for s in h["strats"])
+            rows += (f'<tr><td class="n">{h["ts"].strftime("%d/%m %H:%M")} UTC</td>'
+                     f'<td class="nm">{h["asset"]}</td>'
+                     f'<td class="{dcls}" style="font-weight:800">{arw} {h["dir"]}</td>'
+                     f'<td class="n">{FL[h["force"]]}</td>'
+                     f'<td>{chips_h}</td><td>{r}</td></tr>')
+        st.markdown('<div class="sect">SINAIS DESTA SESSÃO</div>', unsafe_allow_html=True)
+        st.markdown(f'<table class="perf"><tr><th>VELA</th><th>ATIVO</th><th>DIREÇÃO</th>'
+                    f'<th>FORÇA</th><th>ESTRATÉGIAS</th><th>RESULTADO</th></tr>{rows}</table>',
+                    unsafe_allow_html=True)
+        st.markdown('<div class="note"><b>Este é o teste que vale.</b> Aqui não há backtest nem '
+                    'seleção de período: são os sinais que o app realmente emitiu, apurados pela '
+                    'cor da vela em que a entrada valeria. É a amostra mais honesta que existe — '
+                    'e a única livre de garimpo de dados. O histórico é da <b>sessão do navegador</b>: '
+                    'ao recarregar a página, ele reinicia.</div>', unsafe_allow_html=True)
 
 st.markdown('<div class="foot">Uso próprio · não é recomendação financeira</div>', unsafe_allow_html=True)
