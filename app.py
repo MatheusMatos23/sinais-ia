@@ -50,6 +50,14 @@ FORCE_ORDER = {"FRACA": 1, "MEDIA": 2, "FORTE": 3}
 FL = {"FRACA": "FRACA", "MEDIA": "MÉDIA", "FORTE": "FORTE"}
 
 
+def fmt_price(name, v):
+    if v is None or not math.isfinite(v):
+        return "—"
+    if name.startswith(("BTC", "ETH")):
+        return f"{v:,.0f}".replace(",", ".")
+    return f"{v:.3f}" if "JPY" in name else f"{v:.5f}"
+
+
 def market_open(d):
     wd, h = d.weekday(), d.hour
     if wd == 5 or (wd == 6 and h < 21) or (wd == 4 and h >= 21):
@@ -102,110 +110,160 @@ def get_data(assets, interval, minutes):
     return {a["name"]: cache.get((a["yf"], interval, ck)) for a in assets}
 
 
-# ============================== ESTILO ==============================
+# ============================== DESIGN SYSTEM ==============================
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@600;800&display=swap');
-:root{--buy:#00e5a0;--sell:#ff4d6d;--ink:#e8eeff;--mut:#8fa0c4;--line:rgba(255,255,255,.08);
- --surf:rgba(255,255,255,.035);--surf2:rgba(255,255,255,.06);}
-.stApp{background:radial-gradient(1100px 520px at 10% -10%,#15224a 0%,rgba(8,11,20,0) 60%),
- radial-gradient(800px 420px at 95% -5%,#0a2f3d 0%,rgba(8,11,20,0) 55%),linear-gradient(#080b14,#05070e);
- color:var(--ink);font-family:'Inter',sans-serif;}
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600;700&display=swap');
+:root{
+  --bg:#07090E; --surf:#0D111A; --surf2:#121724; --line:rgba(255,255,255,.06);
+  --line2:rgba(255,255,255,.11); --ink:#E9EDF5; --ink2:#B6C0D4; --mut:#6F7B93;
+  --buy:#00C88A; --buy-dim:rgba(0,200,138,.10); --sell:#FF4A63; --sell-dim:rgba(255,74,99,.09);
+  --warn:#D9A441; --r:12px; --r2:16px;
+}
+.stApp{background:var(--bg);color:var(--ink);
+  font-family:'Inter',-apple-system,sans-serif;-webkit-font-smoothing:antialiased;}
 #MainMenu,footer,header{visibility:hidden}
-.block-container{padding-top:1.2rem;padding-bottom:3rem;max-width:1120px}
-h1,h2,h3{font-weight:700}
-/* ---- topbar ---- */
-.topbar{display:flex;align-items:center;gap:16px;flex-wrap:wrap;
- background:var(--surf);border:1px solid var(--line);border-radius:16px;padding:14px 20px;margin-bottom:6px}
-.tb-brand{display:flex;align-items:center;gap:9px;font-weight:800;font-size:1.05rem;letter-spacing:.2px}
-.tb-brand .dot{width:8px;height:8px;border-radius:50%;background:var(--buy);box-shadow:0 0 10px var(--buy)}
-.tb-sep{width:1px;height:26px;background:var(--line)}
-.tb-item{display:flex;flex-direction:column;gap:2px}
-.tb-k{font-size:.6rem;letter-spacing:1.6px;color:var(--mut);font-weight:700}
-.tb-v{font-size:.85rem;font-weight:700}
-.chip{display:inline-block;padding:3px 10px;border-radius:999px;font-size:.68rem;font-weight:700;
- border:1px solid var(--line);background:var(--surf2);color:#a9bbdd;margin-right:5px}
-.chip.live{color:#052018;background:linear-gradient(90deg,#00e5a0,#22d3ee);border:0}
-.chip.off{color:#ff9db0;border-color:rgba(255,77,109,.3)}
-/* ---- hero ---- */
-.hero{position:relative;border-radius:20px;padding:28px 32px;overflow:hidden;margin-top:4px;
- background:linear-gradient(150deg,rgba(255,255,255,.06),rgba(255,255,255,.015));
- border:1px solid var(--line)}
-.hero .tag{position:absolute;top:18px;right:20px;font-size:.58rem;font-weight:800;letter-spacing:1.8px;
- padding:5px 11px;border-radius:999px;background:var(--surf2);color:#b3c1e0;border:1px solid var(--line)}
-.hero .pair{font-size:1.15rem;font-weight:700;letter-spacing:1.5px;color:#dbe4ff}
-.hero .dir{font-family:'JetBrains Mono',monospace;font-weight:800;font-size:3.6rem;line-height:1.05;
- margin:.3rem 0 .1rem;display:flex;align-items:center;gap:14px}
-.hero .arw{font-size:2.4rem}
-.hero .sub{font-size:.75rem;letter-spacing:2.4px;color:var(--mut);font-weight:700}
-.buy .dir{color:var(--buy)} .sell .dir{color:var(--sell)} .wait .dir{color:#93a4c8;font-size:2.2rem}
-.hero.buy{box-shadow:inset 0 0 0 1px rgba(0,229,160,.26)}
-.hero.sell{box-shadow:inset 0 0 0 1px rgba(255,77,109,.24)}
-.hero .glow{position:absolute;right:-80px;top:-80px;width:280px;height:280px;border-radius:50%;filter:blur(80px);opacity:.30}
-.buy .glow{background:var(--buy)} .sell .glow{background:var(--sell)} .wait .glow{background:#33406b;opacity:.18}
-/* ---- barras de força ---- */
-.fb{display:flex;gap:6px;align-items:center;margin-top:14px}
-.fb .b{width:44px;height:9px;border-radius:5px;background:rgba(255,255,255,.10)}
+.block-container{padding-top:1.5rem;padding-bottom:4rem;max-width:1180px}
+.mono{font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums}
+hr{border-color:var(--line)}
+
+/* ---------- HEADER ---------- */
+.hdr{display:flex;align-items:center;justify-content:space-between;gap:24px;
+  background:var(--surf);border:1px solid var(--line);border-radius:var(--r2);
+  padding:16px 22px;margin-bottom:18px}
+.hdr-l{display:flex;align-items:center;gap:26px;flex-wrap:wrap}
+.brand{display:flex;align-items:center;gap:10px;font-weight:600;font-size:1rem;letter-spacing:-.01em}
+.brand .mk{width:22px;height:22px;border-radius:7px;background:linear-gradient(135deg,var(--buy),#0EA5C6);
+  display:flex;align-items:center;justify-content:center;font-size:.7rem;color:#04150F;font-weight:700}
+.meta{display:flex;flex-direction:column;gap:3px}
+.meta .k{font-size:.58rem;letter-spacing:.14em;color:var(--mut);font-weight:600;text-transform:uppercase}
+.meta .v{font-size:.82rem;font-weight:600;color:var(--ink2)}
+.dotstat{display:inline-flex;align-items:center;gap:6px;font-size:.82rem;font-weight:600}
+.dotstat i{width:6px;height:6px;border-radius:50%;background:var(--buy);
+  box-shadow:0 0 0 3px rgba(0,200,138,.15);font-style:normal}
+.dotstat.off i{background:var(--sell);box-shadow:0 0 0 3px rgba(255,74,99,.14)}
+.sess-tag{font-size:.7rem;color:var(--ink2);font-weight:500}
+.sess-tag+.sess-tag:before{content:"·";margin:0 6px;color:var(--mut)}
+/* contador dentro do header */
+.cd{display:flex;align-items:center;gap:14px;min-width:230px}
+.cd .k{font-size:.58rem;letter-spacing:.14em;color:var(--mut);font-weight:600}
+.cd .t{font-family:'IBM Plex Mono',monospace;font-size:1.5rem;font-weight:600;letter-spacing:.02em;
+  font-variant-numeric:tabular-nums}
+.cd .track{height:3px;flex:1;border-radius:2px;background:rgba(255,255,255,.07);overflow:hidden;min-width:70px}
+.cd .fill{height:100%;background:var(--buy);transition:width .9s linear}
+
+/* ---------- CONTROLES ---------- */
+.lbl{font-size:.58rem;letter-spacing:.14em;color:var(--mut);font-weight:600;
+  text-transform:uppercase;margin-bottom:7px}
+div[role="radiogroup"]{gap:0!important;background:var(--surf);border:1px solid var(--line);
+  border-radius:10px;padding:3px;display:inline-flex}
+div[role="radiogroup"] label{background:transparent!important;border:0!important;margin:0!important;
+  padding:6px 16px!important;border-radius:7px;font-weight:600;font-size:.8rem;color:var(--mut);
+  transition:all .15s}
+div[role="radiogroup"] label:hover{color:var(--ink2)}
+div[role="radiogroup"] label[data-baseweb="radio"]:has(input:checked){background:var(--surf2)!important;color:var(--ink)!important}
+div[role="radiogroup"] label div:first-child{display:none!important}
+.stMultiSelect div[data-baseweb="select"]>div{background:var(--surf);border:1px solid var(--line);
+  border-radius:10px;min-height:42px}
+.stMultiSelect [data-baseweb="tag"]{background:var(--surf2)!important;border:1px solid var(--line2)!important;
+  border-radius:7px!important;color:var(--ink2)!important;font-size:.72rem!important;font-weight:500!important}
+div[data-testid="stSlider"] [data-baseweb="slider"] div[role="slider"]{background:var(--buy)!important}
+div[data-testid="stExpander"]{border:1px solid var(--line);border-radius:var(--r);background:var(--surf)}
+div[data-testid="stExpander"] summary{font-weight:600;font-size:.82rem;color:var(--ink2)}
+div[data-testid="stExpander"] summary:hover{color:var(--ink)}
+
+/* ---------- TABS ---------- */
+.stTabs [data-baseweb="tab-list"]{gap:2px;border-bottom:1px solid var(--line);background:transparent}
+.stTabs [data-baseweb="tab"]{background:transparent;border-radius:0;padding:11px 2px;margin-right:26px;
+  font-weight:600;font-size:.86rem;color:var(--mut);border-bottom:2px solid transparent}
+.stTabs [aria-selected="true"]{color:var(--ink);border-bottom:2px solid var(--buy)}
+.stTabs [data-baseweb="tab-highlight"]{display:none}
+
+/* ---------- HERO ---------- */
+.hero{display:grid;grid-template-columns:1.35fr 1fr;gap:0;border-radius:var(--r2);overflow:hidden;
+  border:1px solid var(--line);background:var(--surf);margin-top:20px}
+.hero.buy{border-color:rgba(0,200,138,.25)}
+.hero.sell{border-color:rgba(255,74,99,.22)}
+.hero-main{padding:30px 32px;position:relative}
+.hero.buy .hero-main{background:linear-gradient(120deg,var(--buy-dim),transparent 70%)}
+.hero.sell .hero-main{background:linear-gradient(120deg,var(--sell-dim),transparent 70%)}
+.hero-side{padding:24px 26px;border-left:1px solid var(--line);background:rgba(255,255,255,.012);
+  display:flex;flex-direction:column;justify-content:center;gap:16px}
+.h-tag{font-size:.56rem;letter-spacing:.16em;font-weight:600;color:var(--mut);text-transform:uppercase}
+.h-pair{font-size:1.5rem;font-weight:600;letter-spacing:-.01em;margin-top:5px;color:var(--ink)}
+.h-dir{font-family:'IBM Plex Mono',monospace;font-size:3.1rem;font-weight:700;line-height:1;
+  margin:14px 0 4px;display:flex;align-items:baseline;gap:12px;letter-spacing:-.02em}
+.h-dir .ar{font-size:1.7rem}
+.buy .h-dir{color:var(--buy)} .sell .h-dir{color:var(--sell)} .wait .h-dir{color:var(--ink2);font-size:2rem}
+.h-row{display:flex;flex-direction:column;gap:4px}
+.h-k{font-size:.56rem;letter-spacing:.14em;color:var(--mut);font-weight:600;text-transform:uppercase}
+.h-v{font-size:.95rem;font-weight:600;color:var(--ink)}
+.h-v.mono{font-size:1.05rem}
+
+/* ---------- FORÇA ---------- */
+.fb{display:flex;gap:4px;align-items:center}
+.fb .b{width:34px;height:4px;border-radius:2px;background:rgba(255,255,255,.09)}
 .buy .b.on{background:var(--buy)} .sell .b.on{background:var(--sell)}
-.fb .lbl{margin-left:11px;font-size:.7rem;letter-spacing:2.2px;font-weight:800;color:#aab8da}
-/* ---- chips de estratégia ---- */
-.strats{margin-top:14px;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
-.sc{font-size:.64rem;font-weight:600;padding:4px 10px;border-radius:8px;
- background:var(--surf2);color:#c0cdec;border:1px solid var(--line)}
-.conf{font-size:.58rem;font-weight:800;letter-spacing:1.2px;padding:4px 10px;border-radius:8px;
- background:rgba(0,229,160,.14);color:#7df0c6;border:1px solid rgba(0,229,160,.32)}
-/* ---- grade ---- */
-.sect{margin:26px 0 12px;font-size:.72rem;font-weight:800;letter-spacing:2px;color:var(--mut)}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:13px}
-.card{border-radius:14px;padding:16px 17px;background:var(--surf);border:1px solid var(--line);
- transition:transform .16s ease,border-color .16s ease}
-.card:hover{transform:translateY(-3px);border-color:rgba(255,255,255,.20)}
-.card .p{font-size:.95rem;font-weight:700;color:#dfe7ff}
-.card .d{font-family:'JetBrains Mono',monospace;font-size:1.35rem;font-weight:800;margin:.25rem 0 .3rem}
+.fb .lbl2{margin-left:10px;font-size:.68rem;letter-spacing:.1em;font-weight:600;color:var(--ink2)}
+
+/* ---------- CHIPS ---------- */
+.strats{display:flex;flex-wrap:wrap;gap:5px;align-items:center}
+.sc{font-size:.66rem;font-weight:500;padding:4px 9px;border-radius:6px;
+  background:var(--surf2);color:var(--ink2);border:1px solid var(--line)}
+.conf{font-size:.58rem;font-weight:600;letter-spacing:.08em;padding:4px 9px;border-radius:6px;
+  background:var(--buy-dim);color:var(--buy);border:1px solid rgba(0,200,138,.28)}
+
+/* ---------- SEÇÃO / GRADE ---------- */
+.sect{margin:30px 0 14px;font-size:.6rem;font-weight:600;letter-spacing:.16em;color:var(--mut);
+  text-transform:uppercase;display:flex;align-items:center;gap:10px}
+.sect:after{content:"";flex:1;height:1px;background:var(--line)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(215px,1fr));gap:12px}
+.card{border-radius:var(--r);background:var(--surf);border:1px solid var(--line);overflow:hidden;
+  transition:border-color .16s ease,transform .16s ease}
+.card:hover{border-color:var(--line2);transform:translateY(-2px)}
+.card .top{height:2px;background:var(--line)}
+.card.buy .top{background:var(--buy)} .card.sell .top{background:var(--sell)}
+.card .body{padding:15px 16px}
+.card .row1{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:9px}
+.card .p{font-size:.9rem;font-weight:600;color:var(--ink)}
+.card .px{font-family:'IBM Plex Mono',monospace;font-size:.75rem;color:var(--mut);font-variant-numeric:tabular-nums}
+.card .d{font-family:'IBM Plex Mono',monospace;font-size:1.15rem;font-weight:700;margin-bottom:10px;
+  display:flex;align-items:center;gap:7px}
 .card.buy .d{color:var(--buy)} .card.sell .d{color:var(--sell)}
-.card.buy{box-shadow:inset 0 0 0 1px rgba(0,229,160,.16)}
-.card.sell{box-shadow:inset 0 0 0 1px rgba(255,77,109,.14)}
-.card .fb .b{width:22px;height:6px} .card .fb .lbl{margin-left:6px;font-size:.6rem;letter-spacing:1.4px}
-.card .strats{margin-top:9px} .card .sc{font-size:.58rem;padding:3px 8px}
-/* ---- tabela ---- */
-.perf{width:100%;border-collapse:separate;border-spacing:0 7px;font-size:.85rem}
-.perf th{text-align:left;font-size:.6rem;letter-spacing:1.6px;color:var(--mut);font-weight:800;padding:0 14px}
-.perf td{background:var(--surf);border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:12px 14px}
-.perf tr td:first-child{border-left:1px solid var(--line);border-radius:11px 0 0 11px}
-.perf tr td:last-child{border-right:1px solid var(--line);border-radius:0 11px 11px 0}
-.perf tr.on td{background:rgba(0,229,160,.06)}
-.perf .nm{font-weight:700;color:#e2eaff}
-.perf .wr{font-family:'JetBrains Mono',monospace;font-weight:800;font-size:1rem}
-.good{color:var(--buy)} .bad{color:#ff8fa6} .mid{color:#ccd6f0}
-.ci{font-family:'JetBrains Mono',monospace;font-size:.68rem;color:#7f8fb3;margin-left:4px}
-.n{color:var(--mut);font-size:.72rem}
-.verd{font-size:.58rem;font-weight:800;letter-spacing:.8px;padding:2px 8px;border-radius:6px;margin-left:6px}
-.v-good{background:rgba(0,229,160,.13);color:#7df0c6;border:1px solid rgba(0,229,160,.3)}
-.v-bad{background:rgba(255,77,109,.11);color:#ff8fa6;border:1px solid rgba(255,77,109,.28)}
-.v-mid{background:rgba(232,192,122,.11);color:#e8c07a;border:1px solid rgba(232,192,122,.28)}
-.tagmini{font-size:.55rem;font-weight:800;letter-spacing:1px;padding:2px 7px;border-radius:6px;
- background:var(--surf2);color:#a9b7d8;border:1px solid var(--line);margin-left:7px}
-.note{margin-top:16px;font-size:.72rem;color:#8697bd;background:var(--surf);
- border:1px solid var(--line);border-radius:12px;padding:12px 16px;line-height:1.55}
-.note b{color:#b9c6e8}
-.foot{margin-top:26px;text-align:center;font-size:.66rem;color:#55638a}
-/* ---- widgets ---- */
-section[data-testid="stSidebar"]{background:rgba(8,11,20,.86);border-right:1px solid var(--line)}
-section[data-testid="stSidebar"] .block-container{padding-top:1.2rem}
-div[role="radiogroup"]{gap:6px}
-div[role="radiogroup"] label{background:var(--surf);border:1px solid var(--line);
- padding:6px 13px;border-radius:9px;font-weight:600;font-size:.82rem}
-.stTabs [data-baseweb="tab-list"]{gap:4px;border-bottom:1px solid var(--line)}
-.stTabs [data-baseweb="tab"]{background:transparent;border-radius:9px 9px 0 0;padding:9px 18px;
- font-weight:700;font-size:.85rem;color:var(--mut)}
-.stTabs [aria-selected="true"]{background:var(--surf);color:var(--ink)}
-.ctrlbar{margin-top:10px}
-div[data-testid="stExpander"]{border:1px solid var(--line);border-radius:13px;background:var(--surf)}
-div[data-testid="stExpander"] summary{font-weight:700;font-size:.85rem}
+.card .fb{margin-bottom:10px}
+.card .fb .b{width:20px;height:3px} .card .fb .lbl2{margin-left:8px;font-size:.6rem}
+.card .sc{font-size:.6rem;padding:3px 7px}
+
+/* ---------- TABELA ---------- */
+.tbl{width:100%;border-collapse:collapse;font-size:.83rem}
+.tbl th{text-align:left;font-size:.56rem;letter-spacing:.14em;color:var(--mut);font-weight:600;
+  text-transform:uppercase;padding:0 14px 10px;border-bottom:1px solid var(--line)}
+.tbl td{padding:13px 14px;border-bottom:1px solid var(--line)}
+.tbl tr:hover td{background:rgba(255,255,255,.014)}
+.tbl tr.on td{background:rgba(0,200,138,.035)}
+.tbl .nm{font-weight:600;color:var(--ink)}
+.wr{font-family:'IBM Plex Mono',monospace;font-weight:600;font-size:.98rem;font-variant-numeric:tabular-nums}
+.good{color:var(--buy)} .bad{color:var(--sell)} .mid{color:var(--ink2)}
+.ci{font-family:'IBM Plex Mono',monospace;font-size:.66rem;color:var(--mut);margin-left:5px}
+.n{color:var(--mut);font-size:.7rem}
+.verd{font-size:.56rem;font-weight:600;letter-spacing:.06em;padding:3px 7px;border-radius:5px;margin-left:6px}
+.v-good{background:var(--buy-dim);color:var(--buy)}
+.v-bad{background:var(--sell-dim);color:var(--sell)}
+.v-mid{background:rgba(217,164,65,.10);color:var(--warn)}
+.tagmini{font-size:.54rem;font-weight:600;letter-spacing:.06em;padding:2px 6px;border-radius:5px;
+  background:var(--surf2);color:var(--mut);border:1px solid var(--line);margin-left:7px}
+.note{margin-top:18px;font-size:.72rem;color:var(--mut);border-left:2px solid var(--line2);
+  padding:2px 0 2px 14px;line-height:1.65}
+.note b{color:var(--ink2);font-weight:600}
+.foot{margin-top:34px;padding-top:18px;border-top:1px solid var(--line);text-align:center;
+  font-size:.64rem;color:#4E5872}
 div[data-testid="stMetric"]{background:var(--surf);border:1px solid var(--line);
- border-radius:12px;padding:12px 14px}
-div[data-testid="stMetricValue"]{font-family:'JetBrains Mono',monospace;font-size:1.4rem}
-.stMultiSelect [data-baseweb="tag"]{background:rgba(0,229,160,.14);border:1px solid rgba(0,229,160,.3)}
+  border-radius:var(--r);padding:14px 16px}
+div[data-testid="stMetricLabel"] p{font-size:.58rem!important;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--mut)!important;font-weight:600!important}
+div[data-testid="stMetricValue"]{font-family:'IBM Plex Mono',monospace;font-size:1.3rem;
+  font-variant-numeric:tabular-nums}
+@media(max-width:900px){.hero{grid-template-columns:1fr}.hero-side{border-left:0;border-top:1px solid var(--line)}}
 </style>
 """, unsafe_allow_html=True)
 
@@ -214,21 +272,26 @@ topbar_slot = st.empty()          # a barra de status é preenchida depois (prec
 st.markdown('<div class="ctrlbar">', unsafe_allow_html=True)
 cc1, cc2, cc3 = st.columns([1.05, 2.1, 1.05])
 with cc1:
-    tf_label = st.radio("⏱️ Timeframe", ["1 min", "5 min", "15 min"], index=1, horizontal=True)
+    st.markdown('<div class="lbl">Timeframe</div>', unsafe_allow_html=True)
+    tf_label = st.radio("tf", ["1 min", "5 min", "15 min"], index=1, horizontal=True,
+                        label_visibility="collapsed")
     TF = {"1 min": "1", "5 min": "5", "15 min": "15"}[tf_label]
 with cc2:
+    st.markdown('<div class="lbl">Estratégias ativas</div>', unsafe_allow_html=True)
     default_sel = [k for k in ("G · Fade vela extrema", "J · Z-score forte", "K · Reversão dupla")
                    if k in STRATEGIES]
-    sel_strats = st.multiselect("🎯 Estratégias ativas (escolha uma ou mais)",
-                                list(STRATEGIES), default=default_sel,
-                                placeholder="Escolha uma ou mais estratégias")
+    sel_strats = st.multiselect("est", list(STRATEGIES), default=default_sel,
+                                placeholder="Escolha uma ou mais estratégias",
+                                label_visibility="collapsed")
     if not sel_strats:
         sel_strats = default_sel or [list(STRATEGIES)[0]]
 with cc3:
-    min_force = st.select_slider("💪 Força mínima", options=["FRACA", "MÉDIA", "FORTE"], value="FRACA")
+    st.markdown('<div class="lbl">Força mínima</div>', unsafe_allow_html=True)
+    min_force = st.select_slider("fm", options=["FRACA", "MÉDIA", "FORTE"], value="FRACA",
+                                 label_visibility="collapsed")
 st.markdown('</div>', unsafe_allow_html=True)
 
-with st.expander("⚙️  Mais opções — filtros, áudio, payout e atualização"):
+with st.expander("Mais opções — filtros, áudio, payout e atualização"):
     o1, o2, o3 = st.columns(3)
     with o1:
         st.markdown("**Filtros**")
@@ -269,7 +332,9 @@ for a in scan_list:
         if not r:
             continue
         key = (a["name"], r[0])
-        e = agg.setdefault(key, {"a": a, "dir": r[0], "force": r[1], "score": abs(last), "strats": []})
+        px = float(d["Close"].iloc[-1]) if len(d) else float("nan")
+        e = agg.setdefault(key, {"a": a, "dir": r[0], "force": r[1], "score": abs(last),
+                                 "strats": [], "px": px})
         e["strats"].append(nm)
         e["score"] = max(e["score"], abs(last))
         if FORCE_ORDER[r[1]] > FORCE_ORDER[e["force"]]:
@@ -313,39 +378,51 @@ perf = pc[pk]
 
 # ============================== TOPBAR ==============================
 if market_open(now):
-    sess = "".join(f'<span class="chip live">{s}</span>' for s in active_sessions(now))
-    status = f'<span class="chip live">MERCADO ABERTO</span>'
+    stat = '<span class="dotstat"><i></i>Mercado aberto</span>'
+    sess = "".join(f'<span class="sess-tag">{s}</span>' for s in active_sessions(now)) or \
+           '<span class="sess-tag">—</span>'
 else:
-    sess = '<span class="chip off">fim de semana</span>'
-    status = '<span class="chip off">FOREX FECHADO</span>'
+    stat = '<span class="dotstat off"><i></i>Forex fechado</span>'
+    sess = '<span class="sess-tag">fim de semana · cripto 24/7</span>'
+
 topbar_slot.markdown(f"""
-<div class="topbar">
-  <div class="tb-brand"><span class="dot"></span>Sinais IA</div>
-  <div class="tb-sep"></div>
-  <div class="tb-item"><span class="tb-k">STATUS</span><span class="tb-v">{status}</span></div>
-  <div class="tb-item"><span class="tb-k">SESSÕES</span><span class="tb-v">{sess}</span></div>
-  <div class="tb-item"><span class="tb-k">TIMEFRAME</span><span class="tb-v">{TF_LABEL[TF]}</span></div>
-  <div class="tb-item"><span class="tb-k">ESTRATÉGIAS</span><span class="tb-v">{len(sel_strats)} ativa(s)</span></div>
-  <div class="tb-item"><span class="tb-k">VARREDURA</span><span class="tb-v">{len(scan_list)} ativos</span></div>
+<div class="hdr">
+  <div class="hdr-l">
+    <div class="brand"><span class="mk">S</span>Sinais IA</div>
+    <div class="meta"><span class="k">Status</span><span class="v">{stat}</span></div>
+    <div class="meta"><span class="k">Sessões</span><span class="v">{sess}</span></div>
+    <div class="meta"><span class="k">Timeframe</span><span class="v">{TF_LABEL[TF]}</span></div>
+    <div class="meta"><span class="k">Estratégias</span><span class="v">{len(sel_strats)} ativas</span></div>
+    <div class="meta"><span class="k">Varredura</span><span class="v">{len(scan_list)} ativos</span></div>
+  </div>
 </div>""", unsafe_allow_html=True)
 
 components.html(f"""
-<div style="font-family:'JetBrains Mono',monospace;color:#e8eeff;background:rgba(255,255,255,.04);
- border:1px solid rgba(255,255,255,.08);border-radius:14px;padding:12px 20px;display:flex;
- align-items:center;gap:18px">
- <div style="font-size:.6rem;letter-spacing:1.8px;color:#8fa0c4;font-family:Inter,sans-serif;font-weight:700">PRÓXIMA VELA</div>
- <div id="clk" style="font-size:1.7rem;font-weight:800;letter-spacing:2px">--:--</div>
- <div id="ent"></div><div style="flex:1"></div>
- <div style="height:7px;flex:0 0 240px;border-radius:5px;background:rgba(255,255,255,.09);overflow:hidden">
-  <div id="pb" style="height:100%;width:0%;background:linear-gradient(90deg,#00e5a0,#22d3ee)"></div></div>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@500;600&family=IBM+Plex+Mono:wght@600&display=swap');
+*{{box-sizing:border-box}} body{{margin:0}}
+.bar{{font-family:'Inter',sans-serif;background:#0D111A;border:1px solid rgba(255,255,255,.06);
+ border-radius:12px;padding:11px 20px;display:flex;align-items:center;gap:16px;color:#E9EDF5}}
+.k{{font-size:.56rem;letter-spacing:.14em;color:#6F7B93;font-weight:600;text-transform:uppercase}}
+.t{{font-family:'IBM Plex Mono',monospace;font-size:1.35rem;font-weight:600;font-variant-numeric:tabular-nums}}
+.track{{height:3px;flex:1;border-radius:2px;background:rgba(255,255,255,.07);overflow:hidden}}
+.fill{{height:100%;background:#00C88A}}
+.badge{{font-size:.6rem;font-weight:600;letter-spacing:.08em;padding:4px 10px;border-radius:6px;
+ background:rgba(0,200,138,.12);color:#00C88A;border:1px solid rgba(0,200,138,.28)}}
+@keyframes pulse{{0%,100%{{opacity:.5}}50%{{opacity:1}}}}
+</style>
+<div class="bar">
+  <span class="k">Próxima vela</span>
+  <span class="t" id="k">--:--</span>
+  <span id="e"></span>
+  <div class="track"><div class="fill" id="f" style="width:0%"></div></div>
 </div>
-<style>@import url('https://fonts.googleapis.com/css2?family=Inter:wght@700;800&family=JetBrains+Mono:wght@800&display=swap');
-@keyframes np{{0%{{opacity:.55}}50%{{opacity:1}}100%{{opacity:.55}}}}</style>
-<script>var TF={int(TF)};function t(){{var n=Date.now()/1000,per=TF*60,pos=n%per,left=per-pos,
-m=Math.floor(left/60),s=Math.floor(left%60);document.getElementById('clk').textContent=(m<10?'0':'')+m+':'+(s<10?'0':'')+s;
-document.getElementById('pb').style.width=((pos/per)*100).toFixed(1)+'%';
-document.getElementById('ent').innerHTML=pos<12?'<span style="font-family:Inter,sans-serif;font-weight:800;font-size:.7rem;letter-spacing:1px;padding:5px 12px;border-radius:999px;color:#04120d;background:linear-gradient(90deg,#00e5a0,#22d3ee);animation:np 1s infinite">● NOVA ENTRADA</span>':'';}}
-t();setInterval(t,1000);</script>""", height=60)
+<script>var TF={int(TF)};function t(){{var n=Date.now()/1000,per=TF*60,pos=n%per,l=per-pos,
+m=Math.floor(l/60),s=Math.floor(l%60);
+document.getElementById('k').textContent=(m<10?'0':'')+m+':'+(s<10?'0':'')+s;
+document.getElementById('f').style.width=((pos/per)*100).toFixed(1)+'%';
+document.getElementById('e').innerHTML=pos<12?'<span class="badge" style="animation:pulse 1.1s infinite">NOVA ENTRADA</span>':'';}}
+t();setInterval(t,1000);</script>""", height=52)
 
 def _short(nm):
     return nm.split("·")[0].strip()
@@ -386,7 +463,7 @@ def record_and_resolve(entries, data, minutes):
 
 hist = record_and_resolve(entries, data, minutes)
 
-tab_sig, tab_perf, tab_hist = st.tabs(["📡  Sinais", "📊  Desempenho", "📜  Histórico"])
+tab_sig, tab_perf, tab_hist = st.tabs(["Sinais", "Desempenho", "Histórico"])
 
 
 def bars(f):
@@ -396,7 +473,7 @@ def bars(f):
 
 def chips(e, big=False):
     n = len(e["strats"])
-    c = f'<span class="conf">{n} ESTRATÉGIAS CONCORDAM</span>' if n > 1 else ""
+    c = f'<span class="conf">{n} concordam</span>' if n > 1 else ""
     if big:
         c += "".join(f'<span class="sc">{s}</span>' for s in e["strats"])
     else:
@@ -404,39 +481,65 @@ def chips(e, big=False):
     return f'<div class="strats">{c}</div>'
 
 
+def hero_html(e, cvela):
+    cls = "buy" if e["dir"] == "COMPRA" else "sell"
+    ar = "▲" if e["dir"] == "COMPRA" else "▼"
+    return f"""<div class="hero {cls}">
+      <div class="hero-main">
+        <div class="h-tag">Melhor entrada</div>
+        <div class="h-pair">{e["a"]["name"]}</div>
+        <div class="h-dir"><span class="ar">{ar}</span>{e["dir"]}</div>
+        <div class="fb">{bars(e["force"])}<span class="lbl2">Força {FL[e["force"]].lower()}</span></div>
+      </div>
+      <div class="hero-side">
+        <div class="h-row"><span class="h-k">Preço atual</span>
+          <span class="h-v mono">{fmt_price(e["a"]["name"], e.get("px"))}</span></div>
+        <div class="h-row"><span class="h-k">Entrada na vela</span>
+          <span class="h-v mono">{cvela}</span></div>
+        <div class="h-row"><span class="h-k">Estratégias</span>{chips(e, big=True)}</div>
+      </div></div>"""
+
+
+def card_html(e):
+    cls = "buy" if e["dir"] == "COMPRA" else "sell"
+    ar = "▲" if e["dir"] == "COMPRA" else "▼"
+    return (f'<div class="card {cls}"><div class="top"></div><div class="body">'
+            f'<div class="row1"><span class="p">{e["a"]["name"]}</span>'
+            f'<span class="px">{fmt_price(e["a"]["name"], e.get("px"))}</span></div>'
+            f'<div class="d">{ar} {e["dir"]}</div>'
+            f'<div class="fb">{bars(e["force"])}<span class="lbl2">{FL[e["force"]].lower()}</span></div>'
+            f'{chips(e)}</div></div>')
+
+
 # ============================== ABA SINAIS ==============================
 with tab_sig:
+    cvela = pd.Timestamp(candle_key(minutes) * minutes * 60, unit="s").strftime("%H:%M")
     if entries:
-        e = entries[0]
-        cls = "buy" if e["dir"] == "COMPRA" else "sell"
-        arw = "▲" if e["dir"] == "COMPRA" else "▼"
-        st.markdown(f"""<div class="hero {cls}"><div class="glow"></div>
-          <div class="tag">MELHOR ENTRADA</div>
-          <div class="pair">{e["a"]["name"]}</div>
-          <div class="dir"><span class="arw">{arw}</span> {e["dir"]}</div>
-          <div class="fb">{bars(e["force"])}<span class="lbl">FORÇA {FL[e["force"]]}</span></div>
-          {chips(e, big=True)}</div>""", unsafe_allow_html=True)
+        st.markdown(hero_html(entries[0], cvela + " UTC"), unsafe_allow_html=True)
         rest = entries[1:]
-        st.markdown(f'<div class="sect">OUTRAS ENTRADAS · {len(entries)} NO TOTAL</div>',
+        st.markdown(f'<div class="sect">Outras entradas · {len(entries)} no total</div>',
                     unsafe_allow_html=True)
         if rest:
-            cards = ""
-            for e in rest:
-                cls = "buy" if e["dir"] == "COMPRA" else "sell"
-                arw = "▲" if e["dir"] == "COMPRA" else "▼"
-                cards += (f'<div class="card {cls}"><div class="p">{e["a"]["name"]}</div>'
-                          f'<div class="d">{arw} {e["dir"]}</div>'
-                          f'<div class="fb">{bars(e["force"])}<span class="lbl">{FL[e["force"]]}</span></div>'
-                          f'{chips(e)}</div>')
-            st.markdown(f'<div class="grid">{cards}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="grid">{"".join(card_html(e) for e in rest)}</div>',
+                        unsafe_allow_html=True)
         else:
             st.caption("Esta é a única entrada no momento.")
     else:
-        st.markdown("""<div class="hero wait"><div class="glow"></div>
-          <div class="tag">SCANNER</div>
-          <div class="pair">MERCADO</div>
-          <div class="dir"><span class="arw">◵</span> NENHUMA ENTRADA</div>
-          <div class="sub">AGUARDANDO SETUP — PRÓXIMA VELA</div></div>""", unsafe_allow_html=True)
+        st.markdown(f"""<div class="hero wait">
+          <div class="hero-main">
+            <div class="h-tag">Scanner</div>
+            <div class="h-pair">Mercado</div>
+            <div class="h-dir">Nenhuma entrada</div>
+            <div class="fb"><span class="lbl2" style="margin-left:0">Aguardando setup</span></div>
+          </div>
+          <div class="hero-side">
+            <div class="h-row"><span class="h-k">Próxima vela</span>
+              <span class="h-v mono">{cvela} UTC</span></div>
+            <div class="h-row"><span class="h-k">Estratégias ativas</span>
+              <span class="h-v">{len(sel_strats)}</span></div>
+            <div class="h-row"><span class="h-k">Ativos varridos</span>
+              <span class="h-v">{len(scan_list)}</span></div>
+          </div></div>""", unsafe_allow_html=True)
         st.caption("Nenhum ativo atende aos critérios agora. Ter poucas ou nenhuma entrada é o normal.")
 
     if audio_on:
@@ -501,10 +604,10 @@ with tab_perf:
                  f'<td class="nm">{name}{tag}{on}</td>'
                  f'<td>{cell(*p["hoje"])}</td><td>{cell(*p["per"])}</td></tr>')
 
-    st.markdown(f'<div class="sect">DESEMPENHO · {TF_LABEL[TF]} · PAYOUT {payout_lbl} '
-                f'· BREAKEVEN {BE:.2f}%</div>', unsafe_allow_html=True)
-    st.markdown(f'<table class="perf"><tr><th>ESTRATÉGIA</th><th>HOJE</th>'
-                f'<th>PERÍODO ({TF_PERIOD[interval]})</th></tr>{rows}</table>', unsafe_allow_html=True)
+    st.markdown(f'<div class="sect">Desempenho · {TF_LABEL[TF]} · payout {payout_lbl} '
+                f'· breakeven {BE:.2f}%</div>', unsafe_allow_html=True)
+    st.markdown(f'<table class="tbl"><tr><th>Estratégia</th><th>Hoje</th>'
+                f'<th>Período ({TF_PERIOD[interval]})</th></tr>{rows}</table>', unsafe_allow_html=True)
     st.markdown('<div class="note"><b>Como ler:</b> a taxa é medida operando toda vez que a estratégia '
                 'dispara, entrando na <b>abertura da vela seguinte</b>. Acerto pela cor da vela: COMPRA '
                 'vence se fechar <b style="color:#00e5a0">verde</b>, VENDA se fechar '
@@ -517,7 +620,7 @@ with tab_perf:
 # ============================== ABA HISTÓRICO ==============================
 with tab_hist:
     if not hist:
-        st.markdown('<div class="sect">HISTÓRICO DE SINAIS</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sect">Histórico de sinais</div>', unsafe_allow_html=True)
         st.caption("Ainda não há sinais registrados nesta sessão. Cada entrada que aparecer "
                    "será gravada aqui e o resultado apurado quando a vela fechar.")
     else:
@@ -558,9 +661,9 @@ with tab_hist:
                      f'<td class="{dcls}" style="font-weight:800">{arw} {h["dir"]}</td>'
                      f'<td class="n">{FL[h["force"]]}</td>'
                      f'<td>{chips_h}</td><td>{r}</td></tr>')
-        st.markdown('<div class="sect">SINAIS DESTA SESSÃO</div>', unsafe_allow_html=True)
-        st.markdown(f'<table class="perf"><tr><th>VELA</th><th>ATIVO</th><th>DIREÇÃO</th>'
-                    f'<th>FORÇA</th><th>ESTRATÉGIAS</th><th>RESULTADO</th></tr>{rows}</table>',
+        st.markdown('<div class="sect">Sinais desta sessão</div>', unsafe_allow_html=True)
+        st.markdown(f'<table class="tbl"><tr><th>Vela</th><th>Ativo</th><th>Direção</th>'
+                    f'<th>Força</th><th>Estratégias</th><th>Resultado</th></tr>{rows}</table>',
                     unsafe_allow_html=True)
         st.markdown('<div class="note"><b>Este é o teste que vale.</b> Aqui não há backtest nem '
                     'seleção de período: são os sinais que o app realmente emitiu, apurados pela '
