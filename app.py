@@ -858,6 +858,16 @@ div[data-testid="stExpander"] summary:hover{color:var(--ink)}
 .horas .h-linha.be{position:absolute;left:16px;right:16px;top:52%;
   border-top:1px dashed var(--warn);opacity:.55}
 
+/* barra do que foi registrado na vela atual */
+.regbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+  margin:var(--gap-curto) 0 var(--gap-bloco);font-size:.7rem}
+.regbar .k{font-size:.58rem;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--mut);font-weight:600;margin-right:2px}
+.regchip{display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:999px;
+  background:var(--surf2);border:1px solid var(--line2);color:var(--ink2);font-weight:600}
+.regchip.off{opacity:.45;text-decoration:line-through;border-style:dashed}
+.regbar .obs{color:var(--mut);font-size:.66rem}
+
 /* estado pausado do scanner */
 .empty.pausado{border-left:3px solid var(--warn)}
 .empty.pausado .e-ico{color:var(--warn);border-color:rgba(217,164,65,.3);
@@ -1619,19 +1629,30 @@ def hist_df(h):
 
 
 # ---------- registra os sinais emitidos e apura o resultado pela cor da vela ----------
-def record_and_resolve(entries, data, minutes):
+def record_and_resolve(entries, data, minutes, na_janela):
+    """
+    BUG CORRIGIDO AQUI. Antes, qualquer sinal presente em QUALQUER momento da
+    vela era gravado com `ts` = abertura daquela vela. Como o app varre a cada
+    ~15s e a vela anterior às vezes chega atrasada, um sinal podia surgir no
+    segundo 200 e ser registrado como se você tivesse entrado na abertura — uma
+    entrada que não existia quando a janela estava aberta e que você não teria
+    como executar. Isso inflava o histórico com operações impossíveis.
+
+    Agora só grava dentro da janela de entrada. Se o app não estiver rodando na
+    virada, não há registro — o que é a leitura correta: não houve entrada.
+    """
     hist = hist_load()
     ck = candle_key(minutes)
     start = pd.Timestamp(ck * minutes * 60, unit="s")     # abertura da vela da entrada
     seen = {(h["asset"], h["dir"], h["ck"], h.get("tf")) for h in hist}
     changed = False
-    for e in entries:
+    for e in (entries if na_janela else []):
         k = (e["a"]["name"], e["dir"], ck, minutes)
         if k not in seen:
             nome = e["a"]["name"]
             hist.append({"ck": ck, "ts": start, "asset": nome, "dir": e["dir"],
                          "force": e["force"], "strats": [_short(s) for s in e["strats"]],
-                         "tf": minutes, "res": None,
+                         "tf": minutes, "res": None, "janela": True,
                          # instrumentação: permite medir depois se atraso derruba o acerto
                          "lag": (round(float(lag_ativo[nome]), 2)
                                  if nome in lag_ativo else None),
@@ -1664,7 +1685,7 @@ def record_and_resolve(entries, data, minutes):
     return hist
 
 
-hist = record_and_resolve(entries, data, minutes)
+hist = record_and_resolve(entries, data, minutes, window_open)
 
 
 
@@ -1832,6 +1853,27 @@ with tab_sig:
             st.markdown(f'<div class="grid">{cards}</div>', unsafe_allow_html=True)
         else:
             st.caption("Esta é a única entrada no momento.")
+
+    # ---- o que já foi REGISTRADO nesta vela ----
+    # A aba Sinais mostra o resultado da varredura DE AGORA; o Histórico mostra o
+    # que foi gravado na virada. Os dois podem divergir dentro da mesma vela: um
+    # ativo pode ser bloqueado por dado vencido, uma fonte pode falhar, ou você
+    # pode ter trocado de estratégia/mercado depois da entrada. Antes o sinal
+    # simplesmente sumia da tela e continuava no histórico, sem explicação.
+    _ck_atual = candle_key(minutes)
+    _reg = [h for h in hist if h.get("ck") == _ck_atual and h.get("tf") == minutes]
+    _mostrando = {(e["a"]["name"], e["dir"]) for e in entries}
+    _sumidos = [h for h in _reg if (h["asset"], h["dir"]) not in _mostrando]
+    if _reg:
+        _linhas = "".join(
+            f'<span class="regchip{" off" if (h["asset"], h["dir"]) not in _mostrando else ""}">'
+            f'{h["asset"]} {"▲" if h["dir"] == "COMPRA" else "▼"}</span>'
+            for h in _reg)
+        _obs = (" · os apagados saíram da varredura depois de gravados "
+                "(dado vencido, fonte trocada ou filtro alterado)" if _sumidos else "")
+        st.markdown(
+            f'<div class="regbar"><span class="k">Registrado na vela {cvela}</span>'
+            f'{_linhas}<span class="obs">{_obs}</span></div>', unsafe_allow_html=True)
     else:
         # Estado vazio compacto. Antes era um cartão da mesma altura do sinal
         # real, com muito espaço morto — e "nenhuma entrada" é o estado mais
