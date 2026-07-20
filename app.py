@@ -519,20 +519,25 @@ def data_diag(data_map):
     """
     ref = pd.Timestamp(now).tz_localize(None)
     esperada = pd.Timestamp((candle_key(minutes) - 1) * minutes * 60, unit="s")
+    fontes = st.session_state.get("fontes", {})
     pior, quem, faltando = None, None, []
+    por_fonte = {}                                   # fonte -> pior atraso (min)
     for nome, df in data_map.items():
         if df is None or len(df) == 0:
             continue
         ult = df.index[-1]
         lag = (ref - ult).total_seconds() / 60.0
+        src = fontes.get(nome, "yfinance")
+        if src not in por_fonte or lag > por_fonte[src]:
+            por_fonte[src] = lag
         if pior is None or lag > pior:
             pior, quem = lag, nome
         if ult < esperada:
             faltando.append(nome)
-    return pior, quem, faltando, esperada
+    return pior, quem, faltando, esperada, por_fonte
 
 
-lag_min, lag_asset, sem_vela, vela_esperada = data_diag(data)
+lag_min, lag_asset, sem_vela, vela_esperada, lag_fonte = data_diag(data)
 dados_atrasados = bool(sem_vela) or (lag_min is not None and lag_min > (2 * minutes + 1))
 
 # ============================== SCANNER ==============================
@@ -808,17 +813,21 @@ with tab_sig:
     render_s = time.perf_counter() - t_scan0
     _f = st.session_state.get("fontes", {})
     n_td = sum(1 for v in _f.values() if v == "twelvedata")
+    caidos = [k for k, v in _f.items() if v == "yfinance" and k in {a["name"] for a in scan_list}
+              and next((x for x in ASSETS if x["name"] == k), {}).get("type") == "fx"]
     if TD_KEY:
-        fonte_txt = f"fonte <b>Twelve Data</b> ({n_td} pares) + yfinance"
+        fonte_txt = f"<b>Twelve Data</b> {n_td} pares"
+        if caidos:
+            fonte_txt += f" · <b>yfinance</b> {len(caidos)} ({', '.join(caidos[:3])})"
         err = st.session_state.get("td_erro")
         if err:
-            fonte_txt = f'fonte <b>yfinance</b> — Twelve Data indisponível: {err}'
+            fonte_txt = f'<b>yfinance</b> — Twelve Data indisponível: {err}'
     else:
-        fonte_txt = "fonte <b>yfinance</b> (sem chave da Twelve Data)"
+        fonte_txt = "<b>yfinance</b> (sem chave da Twelve Data)"
+    det = " · ".join(f"{'TD' if k == 'twelvedata' else 'YF'} <b>{v:.1f}min</b>"
+                     for k, v in sorted(lag_fonte.items()))
     st.markdown(f'<div class="lat">{fonte_txt} · busca <b>{fetch_s:.1f}s</b> · '
-                f'processamento <b>{max(0.0, render_s - fetch_s):.1f}s</b> · '
-                f'defasagem da última vela <b>{(lag_min or 0):.1f} min</b></div>',
-                unsafe_allow_html=True)
+                f'atraso por fonte: {det}</div>', unsafe_allow_html=True)
 
     if entries:
         dim = "" if window_open else " stale"
