@@ -665,9 +665,19 @@ _age = now.timestamp() % _per                       # segundos decorridos da vel
 secs_to_next = _per - _age
 window_open = _age <= ENTRY_WINDOW
 
-# refresh: acorda exatamente na virada da vela (assim a janela nunca é perdida)
+# Refresh mirando a virada. O alvo é secs_to_next + 0,4s: acorda logo depois de a
+# vela fechar. O piso de 1,5s evita um laço de reruns colados; o teto `every` é o
+# ritmo normal no meio da vela.
 if auto_on:
-    st_autorefresh(interval=int(min(every, max(3, secs_to_next + 1)) * 1000), key="auto")
+    alvo = max(1.5, min(every, secs_to_next + 0.4))
+    st_autorefresh(interval=int(alvo * 1000), key="auto")
+
+# Este rerun é o PRIMEIRO desta vela? É a única definição correta de "virada":
+# um carregamento manual dentro dos primeiros 20s não mede latência nenhuma.
+_ck_now = candle_key(minutes)
+_ck_ant = st.session_state.get("ultimo_ck")
+primeiro_da_vela = (_ck_ant is not None) and (_ck_ant != _ck_now)
+st.session_state["ultimo_ck"] = _ck_now
 
 open_assets = [a for a in ASSETS if pair_open(a, now)]
 scan_list = ASSETS if show_closed else open_assets
@@ -1111,7 +1121,7 @@ with tab_sig:
     # vela. Num carregamento manual no meio da vela, _age é a idade da vela e não
     # mede nada — por isso só grava dentro da janela de entrada, e nas demais
     # execuções mostra a última medida válida.
-    if _age <= ENTRY_WINDOW:
+    if primeiro_da_vela:
         st.session_state["turn_lat"] = _age + (time.perf_counter() - t_scan0)
     tl = st.session_state.get("turn_lat")
     cs.append(chip("Sinal pronto em",
