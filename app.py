@@ -462,6 +462,17 @@ hr{border-color:var(--line)}
 .wm span{font-size:.56rem;letter-spacing:.2em;text-transform:uppercase;
   color:var(--mut);font-weight:600;margin-top:3px}
 .vbar{width:1px;height:30px;background:var(--line2);flex:none}
+/* pastilha Ao vivo / Pausado — é um link, não um widget do Streamlit */
+.livebtn{display:inline-flex;align-items:center;gap:7px;flex:none;text-decoration:none!important;
+  font-size:.64rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase;
+  padding:7px 13px;border-radius:999px;border:1px solid var(--line2);
+  color:var(--mut);background:var(--surf2);transition:filter .15s,border-color .15s}
+.livebtn:hover{filter:brightness(1.25)}
+.livebtn i{width:7px;height:7px;border-radius:50%;background:var(--mut);font-style:normal}
+.livebtn.on{color:var(--buy);border-color:rgba(0,200,138,.34);background:rgba(0,200,138,.10)}
+.livebtn.on i{background:var(--buy);box-shadow:0 0 0 3px rgba(0,200,138,.16);
+  animation:lpulse 1.8s ease-in-out infinite}
+@keyframes lpulse{0%,100%{opacity:1}50%{opacity:.4}}
 .meta{display:flex;flex-direction:column;gap:3px}
 .meta .k{font-size:.58rem;letter-spacing:.14em;color:var(--mut);font-weight:600;text-transform:uppercase}
 .meta .v{font-size:.82rem;font-weight:600;color:var(--ink2)}
@@ -667,24 +678,24 @@ div[data-testid="stMetricValue"]{font-family:'IBM Plex Mono',monospace;font-size
   border:1px solid var(--line);border-radius:var(--r2);
   padding:14px 20px 12px;margin-bottom:14px;align-items:flex-end;gap:22px}
 [data-testid="stHorizontalBlock"]:has(.lbl) [data-testid="stElementContainer"]{margin-bottom:0}
-/* o toggle "Ao vivo" desce um pouco para alinhar com a base dos outros campos */
-[data-testid="stHorizontalBlock"]:has(.lbl) [data-testid="stCheckbox"]{padding-bottom:6px}
 div[data-testid="stExpander"]{margin-bottom:4px}
 @media(max-width:900px){.hero{grid-template-columns:1fr}.hero-side{border-left:0;border-top:1px solid var(--line)}}
 </style>
 """, unsafe_allow_html=True)
 
 # ============================== CONTROLES (no corpo da página) ==============================
+# ---- estado "Ao vivo" pela URL, não por widget ----
+# O widget teria de morar na grade de colunas do Streamlit, que não alinha bem
+# num cabeçalho denso. Como link com query param, o controle vira HTML meu: fica
+# no cabeçalho, alinhado à direita, e o estado sobrevive a recarregar a página.
+auto_on = st.query_params.get("live", "1") != "0"
+
 topbar_slot = st.empty()          # a barra de status é preenchida depois (precisa dos dados)
 st.markdown('<div class="ctrlbar">', unsafe_allow_html=True)
-# Larguras medidas pelo conteúdo real, não por estética:
-#   timeframe  -> 3 opções de rádio lado a lado, ~290px
-#   estratégias-> 3 chips + botão limpar, ~470px
-#   força      -> slider com rótulo
-#   ao vivo    -> só o toggle
-# Foi apertar a primeira coluna que fez o "15 min" encostar na caixa ao lado.
-cc1, cc2, cc3, cc4 = st.columns([1.35, 2.15, 1.05, 0.55],
-                                vertical_alignment="bottom")
+# Três colunas. A chave "Ao vivo" saiu daqui: ela é um link no cabeçalho, HTML
+# meu, onde o alinhamento é controlável. Tentar encaixá-la como quarta coluna
+# quebrou a linha três vezes seguidas.
+cc1, cc2, cc3 = st.columns([1.35, 2.35, 1.15], vertical_alignment="bottom")
 with cc1:
     st.markdown('<div class="lbl">Timeframe</div>', unsafe_allow_html=True)
     tf_label = st.radio("tf", ["1 min", "5 min", "15 min"], index=1, horizontal=True,
@@ -704,12 +715,6 @@ with cc3:
     st.markdown('<div class="lbl">Força mínima</div>', unsafe_allow_html=True)
     min_force = st.select_slider("fm", options=["FRACA", "MÉDIA", "FORTE"], value="FRACA",
                                  label_visibility="collapsed")
-with cc4:
-    st.markdown('<div class="lbl">Ao vivo</div>', unsafe_allow_html=True)
-    auto_on = st.toggle("Ao vivo", value=True, key="auto_on_top",
-                        label_visibility="collapsed",
-                        help="Ligado, a página se atualiza sozinha a cada poucos "
-                             "segundos. Desligue para ler as tabelas paradas.")
 st.markdown('</div>', unsafe_allow_html=True)
 
 with st.expander("Mais opções — filtros, áudio, payout e atualização"):
@@ -726,7 +731,7 @@ with st.expander("Mais opções — filtros, áudio, payout e atualização"):
         st.markdown("**Análise e atualização**")
         payout_lbl = st.radio("Payout padrão da corretora", ["80%", "90%"], index=0,
                               horizontal=True)
-        st.caption("A chave *Ao vivo* fica na barra de controles, no topo.")
+        st.caption("A pastilha *Ao vivo / Pausado* fica no cabeçalho, à direita.")
         every = st.slider("Intervalo (s)", 10, 60, 15, step=5, disabled=not auto_on)
     st.markdown("**Payout por ativo** — o breakeven muda com o payout, então vale "
                 "conferir o de cada par na sua corretora. Em branco = usa o padrão.")
@@ -933,6 +938,11 @@ topbar_slot.markdown(f"""
     <div class="meta"><span class="k">Horário de Brasília</span>
       <span class="v mono">{br(now).strftime('%H:%M:%S')}</span></div>
   </div>
+  <a class="livebtn {'on' if auto_on else ''}" target="_self"
+     href="?live={'0' if auto_on else '1'}"
+     title="{'Pausar a atualização automática para ler as tabelas paradas'
+             if auto_on else 'Retomar a atualização automática'}"><i></i>{
+     'Ao vivo' if auto_on else 'Pausado'}</a>
 </div>""", unsafe_allow_html=True)
 
 # marcador invisível: o CSS usa o irmão seguinte para liberar a roda do mouse
