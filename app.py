@@ -148,6 +148,40 @@ def hm_exp(ts, minutos):
     return f'{t.strftime("%H:%M")} → {(t + timedelta(minutes=minutos)).strftime("%H:%M")}'
 
 
+# ====================== ENTRADA PREMIUM ======================
+# EXPERIMENTO PRÉ-REGISTRADO. Estes limiares são fixos, definidos ANTES de ver
+# qualquer resultado, e cada um tem um mecanismo causal declarado. Nenhum foi
+# escolhido por dar uma taxa bonita — se fosse assim, eu estaria desenhando o
+# alvo em volta do tiro já dado, e o número na tela não valeria nada.
+#
+# PREMIUM_VER existe para impedir a fraude silenciosa: mudar um limiar sem
+# trocar a versão faria o histórico misturar critérios diferentes na mesma taxa.
+# Qualquer alteração aqui OBRIGA a subir a versão, e a comparação passa a contar
+# só as operações da versão nova. É o que separa experimento de ajuste.
+#
+# O que este modo NÃO promete: taxa maior. A força já testou essa mesma aposta —
+# forte 54,1% contra fraca 53,9% em 10.045 operações — e não separou nada.
+# Aqui a hipótese é outra (regime + qualidade da vela + dado limpo), mas continua
+# sendo hipótese até a amostra falar.
+PREMIUM_VER = 1
+PREMIUM_REGRAS = [
+    ("2+ estratégias concordando",
+     "duas leituras independentes erram junto menos que uma sozinha"),
+    ("corpo do candle ≥ 35% do range",
+     "a operação resolve pela COR da vela; corpo pequeno vira por ruído"),
+    ("ATR entre os percentis 20 e 85",
+     "mercado parado o spread come o movimento; em pico é moeda ao ar"),
+    ("fora de janela de notícia",
+     "em release de dado forte o preço ignora padrão técnico"),
+    ("dado fresco (atraso ≤ 1 vela)",
+     "sinal calculado sobre vela vencida descreve outro momento"),
+    ("par dentro da sessão ativa",
+     "fora da sessão a liquidez cai e o spread abre"),
+]
+PREM_CORPO_MIN = 35.0
+PREM_ATR_LO, PREM_ATR_HI = 20.0, 85.0
+
+
 def num_br(txt):
     """
     Número no padrão brasileiro: vírgula decimal, ponto de milhar.
@@ -1220,6 +1254,27 @@ body.foco [data-testid="stTabs"] [role="tabpanel"]{min-height:0}
 /* amostra fina: a taxa perde destaque para o número de operações não enganar */
 .wl.fina i{color:var(--mut);font-weight:600}
 
+/* ---------- PREMIUM (experimento pré-registrado) ----------
+   Deliberadamente SEM cor de "melhor": nada de dourado, nada de verde. Premium
+   aqui é uma hipótese em teste, não uma categoria superior — se o visual
+   prometer superioridade antes de a amostra provar, o desenho está mentindo. */
+.premreg{border:1px solid var(--line2);border-radius:var(--r);background:var(--surf);
+  padding:12px 15px;margin:var(--gap-curto) 0 var(--gap-bloco)}
+.pr-h{font-size:.58rem;letter-spacing:.13em;text-transform:uppercase;font-weight:700;
+  color:var(--mut);margin-bottom:9px}
+.pr-i{display:flex;flex-direction:column;gap:1px;padding:5px 0;
+  border-top:1px solid var(--line)}
+.pr-i:first-of-type{border-top:0}
+.pr-i b{font-size:.74rem;font-weight:600;color:var(--ink2)}
+.pr-i span{font-size:.64rem;color:var(--mut);line-height:1.45}
+.pr-f{font-size:.63rem;color:var(--mut);line-height:1.55;margin-top:9px;
+  padding-top:8px;border-top:1px solid var(--line)}
+/* selo na entrada: neutro, do mesmo peso das outras pastilhas */
+.selo-prem{display:inline-flex;align-items:center;gap:5px;font-size:.56rem;
+  letter-spacing:.11em;text-transform:uppercase;font-weight:700;color:var(--ink2);
+  background:var(--surf2);border:1px solid var(--line2);border-radius:999px;
+  padding:3px 9px;margin-left:8px}
+
 /* ---------- RADAR ----------
    Linguagem visual PROPOSITALMENTE diferente da das entradas: borda tracejada
    (nada no app usa tracejado), âmbar em vez do verde/vermelho de COMPRA/VENDA,
@@ -1401,7 +1456,7 @@ CFG_PADRAO = {
     "f_atr_on": False, "f_atr_lo": 20, "f_atr_hi": 90,   # percentis de ATR aceitos
     "f_news_on": False, "f_news_min": 15, "f_news_txt": "",
     "cb_on": False, "cb_n": 30, "cb_pausa": 60,
-    "radar": False,
+    "radar": False, "premium": False,
 }
 
 
@@ -1676,6 +1731,23 @@ with tab_cfg:
         # marcado com o motivo. Isso dá o contrafactual de graça — dá para ver
         # se o que o filtro cortou acertava mais ou menos do que o que passou.
         # Sem isso, ligar um filtro é fé, não medição.
+        st.markdown("**Entrada Premium** — experimento pré-registrado")
+        prem_on = st.toggle("Operar só entradas Premium",
+                            value=CFG.get("premium", False),
+                            help="Restringe a TELA às entradas que passam nos seis "
+                                 "critérios. As demais continuam sendo gravadas e "
+                                 "apuradas — é isso que permite comparar as duas "
+                                 "taxas em vez de trocar uma pela outra às cegas.")
+        st.markdown(
+            '<div class="premreg"><div class="pr-h">Critérios · versão '
+            f'{PREMIUM_VER} · fixados antes de qualquer resultado</div>'
+            + "".join(f'<div class="pr-i"><b>{r}</b><span>{m}</span></div>'
+                      for r, m in PREMIUM_REGRAS)
+            + '<div class="pr-f">Cada critério tem um mecanismo, nenhum foi '
+              'calibrado para dar taxa boa. Mudar qualquer limiar obriga a subir '
+              'a versão, e a comparação recomeça — senão seria ajustar o teste '
+              'depois de ver o gabarito.</div></div>', unsafe_allow_html=True)
+
         st.markdown("**Filtros de qualidade** — o que for reprovado não vira "
                     "entrada, mas continua sendo apurado para medir se o filtro "
                     "ajuda de verdade.")
@@ -1818,7 +1890,7 @@ cfg_save({
     "f_atr_on": bool(f_atr_on), "f_atr_lo": int(f_atr_lo), "f_atr_hi": int(f_atr_hi),
     "f_news_on": bool(f_news_on), "f_news_min": int(f_news_min),
     "f_news_txt": str(f_news_txt), "cb_on": bool(cb_on), "cb_n": int(cb_n),
-    "radar": bool(radar_on),
+    "radar": bool(radar_on), "premium": bool(prem_on),
     "cb_pausa": int(cb_pausa),
 })
 
@@ -2092,11 +2164,42 @@ def motivo_corte(e):
     return None
 
 
+def avalia_premium(e):
+    """
+    (é_premium, [motivos de reprovação]). Avaliado em TODO sinal, esteja o modo
+    Premium ligado ou não — é isso que permite comparar premium contra o fluxo
+    normal sem precisar operar só um dos dois e esperar meses por cada resposta.
+    """
+    nome = e["a"]["name"]
+    q = qualidade.get(nome, {})
+    falhas = []
+    if len(e["strats"]) < 2:
+        falhas.append("sem confluência")
+    if q.get("corpo") is not None and q["corpo"] < PREM_CORPO_MIN:
+        falhas.append("corpo pequeno")
+    if q.get("atrp") is not None and not (PREM_ATR_LO <= q["atrp"] <= PREM_ATR_HI):
+        falhas.append("ATR fora da faixa")
+    if noticia_ativa:
+        falhas.append("janela de notícia")
+    _lg = lag_ativo.get(nome)
+    if isinstance(_lg, (int, float)) and math.isfinite(_lg) and _lg > minutes + 0.5:
+        falhas.append("dado atrasado")
+    if not pair_open(e["a"], now):
+        falhas.append("fora de sessão")
+    return (not falhas), falhas
+
+
 for _e in entries:
     _e["bloq"] = motivo_corte(_e)
+    _e["premium"], _e["prem_falhas"] = avalia_premium(_e)
 entries_todos = entries
 entries = [e for e in entries_todos if not e["bloq"]]
 cortados = [e for e in entries_todos if e["bloq"]]
+# "Operar só Premium" esconde as não-premium da tela, mas elas CONTINUAM sendo
+# gravadas e apuradas. Se sumissem, a comparação premium × normal morreria no
+# dia em que você ligasse o modo — e aí nunca daria para saber se ele ajuda.
+if prem_on:
+    entries = [e for e in entries if e.get("premium")]
 
 
 # ============================== DESEMPENHO ==============================
@@ -2365,6 +2468,10 @@ def record_and_resolve(entries, data, minutes, na_janela):
                          # Guardar as métricas mesmo com o filtro desligado é o
                          # que permite calibrar o limiar depois com dado real.
                          "bloq": e.get("bloq"),
+                         # marca do experimento Premium, gravada em todo sinal
+                         "premium": bool(e.get("premium")),
+                         "prem_ver": PREMIUM_VER,
+                         "prem_falhas": e.get("prem_falhas") or [],
                          "q_corpo": qualidade.get(nome, {}).get("corpo"),
                          "q_atrp": qualidade.get(nome, {}).get("atrp"),
                          # instrumentação: permite medir depois se atraso derruba o acerto
@@ -2513,7 +2620,7 @@ def hero_html(e, cvela, tag_destaque="Melhor entrada"):
     return f"""<div class="hero {cls}">
       <div class="hero-main">
         <div class="h-tag">{tag_destaque}</div>
-        <div class="h-pair">{e["a"]["name"]}</div>
+        <div class="h-pair">{e["a"]["name"]}{'<span class="selo-prem">premium</span>' if e.get("premium") else ""}</div>
         <div class="h-dir"><span class="ar">{ar}</span>{e["dir"]}</div>
         <div class="fb">{bars(e["force"])}<span class="lbl2">Força {FL[e["force"]].lower()}</span></div>
       </div>
@@ -3823,6 +3930,65 @@ with tab_hist:
             st.caption("Só ganha sentido com algumas centenas de operações. Até lá os "
                        "intervalos vão ficar largos e o veredito, não conclusivo — isso é "
                        "o esperado, não um defeito.")
+
+        # ---- PREMIUM × FLUXO NORMAL ----
+        # A comparação que decide o experimento. Só entram operações gravadas com
+        # a versão ATUAL dos critérios: misturar versões seria somar dois testes
+        # diferentes na mesma taxa.
+        _pv = [h for h in vis if h.get("prem_ver") == PREMIUM_VER
+               and h["res"] in ("ganhou", "perdeu")]
+        if _pv:
+            _prem = [h for h in _pv if h.get("premium")]
+            _norm = [h for h in _pv if not h.get("premium")]
+            linhas = (linha_ic("Premium", f"v{PREMIUM_VER}", _prem, payout_do(_prem or _pv))
+                      + linha_ic("Não premium", "fluxo normal", _norm,
+                                 payout_do(_norm or _pv)))
+            st.markdown('<div class="sect">Premium × fluxo normal</div>',
+                        unsafe_allow_html=True)
+            st.markdown(f'<table class="tbl"><tr><th>Recorte</th><th>Versão</th>'
+                        f'<th>Acerto · W/L</th><th>IC95</th><th>Veredito</th>'
+                        f'</tr>{linhas}</table>', unsafe_allow_html=True)
+
+            # quanto falta para o Premium sair do "não conclusivo"
+            _wp = sum(1 for h in _prem if h["res"] == "ganhou")
+            if _prem:
+                _pay_p = payout_do(_prem)
+                _falta, _lado = ops_para_concluir(_wp, len(_prem), _pay_p)
+                _tx = _wp / len(_prem) * 100
+                if _falta:
+                    st.markdown(
+                        f'<div class="note">Premium está em <b>{pct(_tx, 1)}</b> '
+                        f'({_wp}W · {len(_prem) - _wp}L). Mantida essa taxa, faltam '
+                        f'cerca de <b>{_falta} operações premium</b> para o intervalo '
+                        f'sair inteiro {_lado} do breakeven de '
+                        f'{pct(breakeven(_pay_p) * 100, 1)}.</div>',
+                        unsafe_allow_html=True)
+                else:
+                    st.markdown(
+                        f'<div class="note">Premium está em <b>{pct(_tx, 1)}</b> contra '
+                        f'um breakeven de {pct(breakeven(_pay_p) * 100, 1)}, e '
+                        f'<b>nenhum tamanho de amostra resolveria</b> essa diferença — '
+                        f'ela é pequena demais. Com este payout não há vantagem a '
+                        f'encontrar por aqui; o caminho é payout melhor.</div>',
+                        unsafe_allow_html=True)
+
+            # por que os sinais reprovam: mostra qual critério está mordendo
+            _mot_p = {}
+            for h in _pv:
+                for f_ in (h.get("prem_falhas") or []):
+                    _mot_p[f_] = _mot_p.get(f_, 0) + 1
+            if _mot_p:
+                st.caption(
+                    "Motivos de reprovação: "
+                    + " · ".join(f"**{v}** {k}" for k, v in
+                                 sorted(_mot_p.items(), key=lambda kv: -kv[1]))
+                    + ". Um critério que reprova quase tudo está só reduzindo "
+                      "amostra; um que nunca reprova não está filtrando nada.")
+            st.caption(
+                "Leia comparando as duas linhas. Se Premium não ficar claramente "
+                "acima de «não premium», os seis critérios não estão comprando "
+                "acerto — estão só comprando menos operações. E é assim que essa "
+                "hipótese morre, se for para morrer: com número, não com opinião.")
 
         # ---- a força do sinal prevê alguma coisa? ----
         # Hipótese mais natural do sistema e nunca testada: score maior deveria
