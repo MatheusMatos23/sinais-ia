@@ -176,6 +176,24 @@ def pct(v, casas=1):
     return num_br(f"{v:.{casas}f}") + "%"
 
 
+def wl(w, n, casas=1, fino=20):
+    """
+    "8W · 5L · 61,5%" — a contagem sempre junto da taxa.
+
+    Uma taxa sozinha esconde o tamanho da amostra, e é o tamanho que decide se
+    ela quer dizer alguma coisa: 60% pode ser 3 de 5 ou 600 de 1000. Com as duas
+    contagens à vista, a fragilidade fica óbvia sem precisar ler o intervalo.
+    """
+    if not n:
+        return '<span class="n">sem operações</span>'
+    # abaixo de `fino` operações a taxa perde destaque: continua visível (esconder
+    # atrás de "—" só parecia defeito), mas sem competir com as contagens.
+    cls = "wl" if n >= fino else "wl fina"
+    return (f'<span class="{cls}"><b class="good">{w}W</b>'
+            f'<b class="bad">{n - w}L</b>'
+            f'<i>{pct(w / n * 100, casas)}</i></span>')
+
+
 def fmt_price(name, v):
     if v is None or not math.isfinite(v):
         return "—"
@@ -1188,6 +1206,19 @@ body.foco [data-testid="stTabs"] [role="tabpanel"]{min-height:0}
   padding:10px 14px;font-size:.62rem;color:var(--mut);line-height:1.35}
 .basebox i{font-style:normal;font-size:1.15rem;font-weight:700;color:var(--ink);
   font-variant-numeric:tabular-nums}
+
+/* ---------- CONTAGEM W/L ----------
+   Vitórias e derrotas coladas na taxa, em toda tabela. A taxa sozinha esconde o
+   tamanho da amostra — e é o tamanho que decide se ela significa algo. */
+.wl{display:inline-flex;align-items:baseline;gap:7px;white-space:nowrap;
+  font-variant-numeric:tabular-nums}
+.wl b{font-weight:700;font-size:.72rem;padding:1px 6px;border-radius:5px;
+  background:var(--surf2);border:1px solid var(--line)}
+.wl b.good{color:var(--buy)}
+.wl b.bad{color:var(--sell)}
+.wl i{font-style:normal;font-weight:700;font-size:.82rem;color:var(--ink)}
+/* amostra fina: a taxa perde destaque para o número de operações não enganar */
+.wl.fina i{color:var(--mut);font-weight:600}
 
 /* ---------- RADAR ----------
    Linguagem visual PROPOSITALMENTE diferente da das entradas: borda tracejada
@@ -2948,8 +2979,9 @@ with tab_res:
             sinal = "good" if d["money"] > 0 else ("bad" if d["money"] < 0 else "mid")
             return (f'<div class="stat"><span class="k">{rot}</span>'
                     f'<span class="v {sinal}">{d["money"]:+.2f}</span>'
-                    f'<span class="x">{d["n"]} ops · {pct(d["taxa"], 1)} · IC95 '
-                    f'{d["lo"]:.0f}–{pct(d["hi"], 0)} · <b class="{cls}">{txt}</b></span></div>')
+                    f'<span class="x">{d["w"]}W · {d["n"] - d["w"]}L · '
+                    f'{pct(d["taxa"], 1)} · IC95 {d["lo"]:.0f}–{pct(d["hi"], 0)} · '
+                    f'<b class="{cls}">{txt}</b></span></div>')
 
         _hoje = br(now).date()
         _sem = [h for h in _res_base if (_hoje - br(h["ts"]).date()).days <= 6]
@@ -3042,7 +3074,7 @@ with tab_res:
                            f'{txt}</span></td></tr>')
             st.markdown(f'<div class="sect">{titulo}</div>', unsafe_allow_html=True)
             st.markdown(f'<table class="tbl"><tr><th>{titulo.split("por ")[-1].capitalize()}</th>'
-                        f'<th>Resultado</th><th>Ops</th><th>Acerto</th><th>Payout</th>'
+                        f'<th>Resultado</th><th>Acerto · W/L</th><th>Payout</th>'
                         f'<th>Veredito</th></tr>{linhas}</table>', unsafe_allow_html=True)
 
         # A força vem primeiro: se ela separar o joio do trigo, é a alavanca mais
@@ -3147,12 +3179,13 @@ with tab_perf:
         if n < N_MIN:
             return (f'<span class="wr faint">{pct(p*100, 1)}</span>'
                     f'<span class="ci">IC95 {lo*100:.0f}–{pct(hi*100, 0)}</span><br>'
-                    f'<span class="n">{n} ops</span>'
+                    f'<span class="n">{w}W · {n - w}L</span>'
                     f'<span class="verd v-faint">amostra pequena</span>')
         cls = "good" if v == "acima" else ("bad" if v == "abaixo" else "mid")
         return (f'<span class="wr {cls}">{pct(p*100, 1)}</span>'
                 f'<span class="ci">IC95 {lo*100:.0f}–{pct(hi*100, 0)}</span><br>'
-                f'<span class="n">{n} ops</span><span class="verd {vc}">{vt}</span>')
+                f'<span class="n">{w}W · {n - w}L</span>'
+                f'<span class="verd {vc}">{vt}</span>')
 
     # Recálculo sob demanda: nada aqui roda sozinho, senão trava a aba Sinais.
     cp = get_perf()
@@ -3312,8 +3345,8 @@ with tab_perf:
             d = pv - pb
             cls = "bad" if d <= -5 else ("good" if d >= 5 else "mid")
             _linhas_cmp += (f'<tr><td class="nm">{name}</td>'
-                            f'<td class="n mono">{pct(pb, 1)}<span class="n"> · {n_bt} ops</span></td>'
-                            f'<td class="n mono">{pct(pv, 1)}<span class="n"> · {nv} ops</span></td>'
+                            f'<td class="n">{wl(w_bt, n_bt)}</td>'
+                            f'<td class="n">{wl(wv, nv)}</td>'
                             f'<td class="mono {cls}" style="font-weight:700">{d:+.1f} pp</td>'
                             f'</tr>')
         if _linhas_cmp:
@@ -3349,19 +3382,24 @@ with tab_perf:
             for _k in ("FORTE", "MEDIA", "FRACA"):
                 _nb_, _wb_ = _bt_forca[_k]
                 _nv_, _wv_ = _viv_forca.get(_k, [0, 0])
-                _pb_ = f'{pct(_wb_ / _nb_ * 100, 1)}' if _nb_ else "—"
-                _pv_ = f'{pct(_wv_ / _nv_ * 100, 1)}' if _nv_ >= 20 else "—"
-                _dif_ = (f'{_wv_/_nv_*100 - _wb_/_nb_*100:+.1f} pp'
-                         if _nb_ and _nv_ >= 20 else
-                         (f'{_nv_} ops ao vivo' if _nv_ else "sem dados ao vivo"))
-                _cls_ = ""
-                if _nb_ and _nv_ >= 20:
-                    _dd_ = _wv_/_nv_*100 - _wb_/_nb_*100
-                    _cls_ = "bad" if _dd_ <= -5 else ("good" if _dd_ >= 5 else "mid")
+                # Esconder a taxa abaixo de 20 operações foi um erro: o "—" parecia
+                # defeito e não informava nada. A taxa aparece SEMPRE, ao lado das
+                # contagens W/L — com "3W · 7L" à vista ninguém confunde 30% de 10
+                # operações com 30% de mil. Abaixo de 20 ela só perde o destaque.
+                _bt_txt = wl(_wb_, _nb_) if _nb_ else '<span class="n">—</span>'
+                _vv_txt = wl(_wv_, _nv_)
+                if _nb_ and _nv_:
+                    _dd_ = _wv_ / _nv_ * 100 - _wb_ / _nb_ * 100
+                    _dif_ = f'{_dd_:+.1f} pp'
+                    _cls_ = ("mid" if _nv_ < 20 else
+                             ("bad" if _dd_ <= -5 else ("good" if _dd_ >= 5 else "mid")))
+                    if _nv_ < 20:
+                        _dif_ += ' <span class="n">(amostra fina)</span>'
+                else:
+                    _dif_, _cls_ = '<span class="n">sem dados ao vivo</span>', ""
                 _lf += (f'<tr><td class="nm">{FL[_k].capitalize()}</td>'
-                        f'<td class="n mono">{_pb_}<span class="n"> · {_nb_} ops</span></td>'
-                        f'<td class="n mono">{_pv_}'
-                        f'<span class="n"> · {_nv_} ops</span></td>'
+                        f'<td class="n">{_bt_txt}</td>'
+                        f'<td class="n">{_vv_txt}</td>'
                         f'<td class="mono {_cls_}" style="font-weight:700">{_dif_}</td></tr>')
             st.markdown('<div class="sect">Força do sinal · backtest × ao vivo</div>',
                         unsafe_allow_html=True)
@@ -3407,7 +3445,7 @@ with tab_perf:
                 acima = lo_ * 100 > BE      # IC inteiro acima: o critério de sempre
                 cls_ = "bom" if acima else ("ruim" if p_ < BE else "neutro")
                 alt = max(6, min(100, (p_ - 40) / 20 * 100))
-                col += (f'<div class="hcol" title="{h_:02d}h · {pct(p_, 1)} em {n_} ops '
+                col += (f'<div class="hcol" title="{h_:02d}h · {w_}W · {n_ - w_}L · {pct(p_, 1)} '
                         f'(IC95 {lo_*100:.0f}–{pct(hi_*100, 0)})">'
                         f'<i class="{cls_}" style="height:{alt:.0f}%"></i>'
                         f'<span class="hh">{h_:02d}</span></div>')
@@ -3581,7 +3619,10 @@ with tab_hist:
             '<div class="statrow">'
             + stat("Sinais registrados", len(vis), f"{abertos} aguardando fechar")
             + stat("Resolvidos", len(fechados), f"{emp} empate(s) devolvido(s)")
-            + stat("Acertos", g, f"de {len(fechados)} operações")
+            + stat("Ganhos × perdas",
+                   f'<span class="good">{g}</span>W · '
+                   f'<span class="bad">{len(fechados) - g}</span>L',
+                   f"de {len(fechados)} operações")
             + stat("Taxa do forward test", taxa_txt, sub, tcls)
             + '</div>', unsafe_allow_html=True)
         st.caption(f"Breakeven {pct(BE, 2)} com payout {payout_lbl}.")
@@ -3734,8 +3775,7 @@ with tab_hist:
             _p, _lo, _hi = wilson_ci(w, len(f))
             cls, t = VTXT[verdict(w, len(f), payout)]
             return (f'<tr><td class="nm">{rot}</td><td class="n">{sub}</td>'
-                    f'<td class="n mono">{len(f)}</td>'
-                    f'<td class="n mono">{pct(w/len(f)*100, 1)}</td>'
+                    f'<td class="n">{wl(w, len(f))}</td>'
                     f'<td class="n mono">{_lo*100:.0f}–{pct(_hi*100, 0)}</td>'
                     f'<td><span class="verd {cls}">{t}</span></td></tr>')
 
@@ -3758,8 +3798,8 @@ with tab_hist:
                                    reverse=True))
             st.markdown('<div class="sect">Forward test por estratégia</div>',
                         unsafe_allow_html=True)
-            st.markdown(f'<table class="tbl"><tr><th>Recorte</th><th>Tipo</th><th>Ops</th>'
-                        f'<th>Acerto</th><th>IC95</th><th>Veredito</th></tr>{linhas}</table>',
+            st.markdown(f'<table class="tbl"><tr><th>Recorte</th><th>Tipo</th><th>Acerto · W/L</th>'
+                        f'<th>IC95</th><th>Veredito</th></tr>{linhas}</table>',
                         unsafe_allow_html=True)
 
         # ---- dado fresco x dado atrasado: a pergunta que a instrumentação responde ----
@@ -3775,8 +3815,8 @@ with tab_hist:
                                  payout_do(velho)))
             st.markdown('<div class="sect">Efeito do atraso dos dados</div>',
                         unsafe_allow_html=True)
-            st.markdown(f'<table class="tbl"><tr><th>Recorte</th><th>Tipo</th><th>Ops</th>'
-                        f'<th>Acerto</th><th>IC95</th><th>Veredito</th></tr>{linhas}</table>',
+            st.markdown(f'<table class="tbl"><tr><th>Recorte</th><th>Tipo</th><th>Acerto · W/L</th>'
+                        f'<th>IC95</th><th>Veredito</th></tr>{linhas}</table>',
                         unsafe_allow_html=True)
             st.caption("Só ganha sentido com algumas centenas de operações. Até lá os "
                        "intervalos vão ficar largos e o veredito, não conclusivo — isso é "
@@ -3797,8 +3837,8 @@ with tab_hist:
                 for k in ("FORTE", "MEDIA", "FRACA") if k in _por_forca)
             st.markdown('<div class="sect">A força do sinal prevê acerto?</div>',
                         unsafe_allow_html=True)
-            st.markdown(f'<table class="tbl"><tr><th>Força</th><th>Tipo</th><th>Ops</th>'
-                        f'<th>Acerto</th><th>IC95</th><th>Veredito</th>'
+            st.markdown(f'<table class="tbl"><tr><th>Força</th><th>Tipo</th><th>Acerto · W/L</th>'
+                        f'<th>IC95</th><th>Veredito</th>'
                         f'</tr>{linhas}</table>', unsafe_allow_html=True)
             st.caption(
                 "Compare as linhas entre si, não cada uma com o breakeven. Se forte e "
@@ -3837,7 +3877,7 @@ with tab_hist:
             st.markdown('<div class="sect">Efeito do seu atraso de execução</div>',
                         unsafe_allow_html=True)
             st.markdown(f'<table class="tbl"><tr><th>Quando entrei</th><th>Tipo</th>'
-                        f'<th>Ops</th><th>Acerto</th><th>IC95</th><th>Veredito</th>'
+                        f'<th>Acerto · W/L</th><th>IC95</th><th>Veredito</th>'
                         f'</tr>{linhas}</table>', unsafe_allow_html=True)
             st.caption(
                 "Comprar no meio da vela não é a mesma operação que comprar na "
@@ -3866,8 +3906,8 @@ with tab_hist:
                 linhas += linha_ic(_ROT.get(k, k), "não operado", v, payout_do(v))
             st.markdown('<div class="sect">Os filtros estão ajudando?</div>',
                         unsafe_allow_html=True)
-            st.markdown(f'<table class="tbl"><tr><th>Recorte</th><th>Tipo</th><th>Ops</th>'
-                        f'<th>Acerto</th><th>IC95</th><th>Veredito</th></tr>{linhas}</table>',
+            st.markdown(f'<table class="tbl"><tr><th>Recorte</th><th>Tipo</th><th>Acerto · W/L</th>'
+                        f'<th>IC95</th><th>Veredito</th></tr>{linhas}</table>',
                         unsafe_allow_html=True)
             st.caption("Leia a comparação, não o veredito de cada linha: o filtro só "
                        "vale a pena se o que ele cortou acertar MENOS do que o que "
@@ -3897,8 +3937,8 @@ with tab_hist:
         if _cal:
             st.markdown('<div class="sect">Calibração dos limiares</div>',
                         unsafe_allow_html=True)
-            st.markdown(f'<table class="tbl"><tr><th>Faixa</th><th>Métrica</th><th>Ops</th>'
-                        f'<th>Acerto</th><th>IC95</th><th>Veredito</th></tr>{_cal}</table>',
+            st.markdown(f'<table class="tbl"><tr><th>Faixa</th><th>Métrica</th><th>Acerto · W/L</th>'
+                        f'<th>IC95</th><th>Veredito</th></tr>{_cal}</table>',
                         unsafe_allow_html=True)
             st.caption("Cuidado com esta tabela: são 10 faixas testadas de uma vez, "
                        "então alguma vai parecer boa por acaso. Só mude um limiar se "
