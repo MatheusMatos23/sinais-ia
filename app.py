@@ -133,6 +133,50 @@ def dhm(ts):
     return br(ts).strftime("%d/%m %H:%M")
 
 
+def _hhmm(txt):
+    """'09:30' -> 570 minutos. None se não for um horário válido."""
+    try:
+        h, m = str(txt).strip().split(":")
+        h, m = int(h), int(m)
+        return h * 60 + m if 0 <= h <= 23 and 0 <= m <= 59 else None
+    except Exception:
+        return None
+
+
+def aberto_na_corretora(nome, agora_utc, grade):
+    """
+    O ativo está negociável na corretora AGORA?
+
+    A grade é do usuário, lida da tela da própria corretora — não existe API
+    pública da Bullex e inventar horário seria pior que não ter: o app passaria
+    a bloquear entradas válidas ou liberar as que não dá para operar.
+    Sem grade cadastrada para o ativo, devolve True e o app segue no critério
+    de sessão de mercado que já existia — nunca fecha o que não sabe.
+    """
+    faixas = (grade or {}).get(nome)
+    if not faixas:
+        return True
+    ag = br(agora_utc)
+    agora_min = ag.hour * 60 + ag.minute
+    validas = 0
+    for par in faixas:
+        if not isinstance(par, (list, tuple)) or len(par) != 2:
+            continue
+        ini, fim = _hhmm(par[0]), _hhmm(par[1])
+        if ini is None or fim is None:
+            continue
+        validas += 1
+        # faixa que atravessa a meia-noite (ex.: 21:00 -> 06:00)
+        dentro = (ini <= agora_min < fim) if ini < fim else (agora_min >= ini or agora_min < fim)
+        if dentro:
+            return True
+    # Nenhuma faixa VÁLIDA: trata como sem restrição, não como fechado.
+    # Uma grade corrompida (config truncada, Gist com lixo) fecharia o ativo
+    # o dia inteiro em silêncio — falha na direção de parar de operar sem dizer
+    # por quê. Melhor errar liberando: o critério de sessão continua valendo.
+    return validas == 0
+
+
 def hm_exp(ts, minutos):
     """
     "09:05 → 09:10": abertura da vela e expiração da opção.
@@ -1457,6 +1501,12 @@ CFG_PADRAO = {
     "f_news_on": False, "f_news_min": 15, "f_news_txt": "",
     "cb_on": False, "cb_n": 30, "cb_pausa": 60,
     "radar": False, "premium": False,
+    # Horário de negociação POR ATIVO, como a corretora pratica. O app já tinha
+    # as sessões do mercado interbancário (Londres, Nova York...), mas isso não
+    # é o que a corretora de binárias abre e fecha: ela tem grade própria, e o
+    # sinal saía em ativo que você não tinha como operar.
+    # Formato: {"EUR/USD": [["09:00","17:30"]], ...} em horário de Brasília.
+    "horarios_ativo": {}, "usar_horarios_ativo": False,
 }
 
 
@@ -1869,6 +1919,49 @@ with tab_cfg:
         st.caption("A pastilha *Ao vivo / Pausado* fica no cabeçalho, à direita.")
         every = st.slider("Intervalo (s)", 10, 60, int(CFG.get("intervalo", 15)),
                           step=5, disabled=not auto_on)
+    st.markdown("**Horário de negociação na corretora** — a grade do mercado "
+                "interbancário (Londres, Nova York) não é a mesma da corretora de "
+                "binárias. Cadastre aqui o horário que a Bullex realmente abre cada "
+                "ativo e o app para de sinalizar o que você não tem como operar.")
+    usar_hor_ativo = st.toggle("Respeitar o horário da corretora por ativo",
+                               value=CFG.get("usar_horarios_ativo", False),
+                               help="Ativo sem horário cadastrado continua seguindo o "
+                                    "critério de sessão de mercado. O app nunca fecha "
+                                    "o que você não informou.")
+    st.caption("Uma ou mais faixas por linha, separadas por vírgula, em horário de "
+               "Brasília: `09:00-17:30` ou `03:00-11:00, 14:00-21:00`. "
+               "Faixa que vira o dia funciona: `21:00-06:00`. Em branco = sem restrição.")
+    _hor_salvo = CFG.get("horarios_ativo") or {}
+    _hor_novo = {}
+    hc1, hc2 = st.columns(2)
+    for i, a in enumerate(ASSETS):
+        _atual = _hor_salvo.get(a["name"]) or []
+        _txt_ini = ", ".join(f"{p[0]}-{p[1]}" for p in _atual
+                             if isinstance(p, (list, tuple)) and len(p) == 2)
+        with (hc1 if i % 2 == 0 else hc2):
+            _v = st.text_input(a["name"], value=_txt_ini, key=f"hor_{a['name']}",
+                               placeholder="24h" if a["type"] == "crypto" else "09:00-17:30",
+                               disabled=not usar_hor_ativo)
+        _faixas = []
+        for parte in str(_v).split(","):
+            parte = parte.strip()
+            if not parte:
+                continue
+            if "-" in parte:
+                ini, fim = parte.split("-", 1)
+                if _hhmm(ini) is not None and _hhmm(fim) is not None:
+                    _faixas.append([ini.strip(), fim.strip()])
+        if _faixas:
+            _hor_novo[a["name"]] = _faixas
+    # avisa sobre texto digitado que não virou faixa, em vez de ignorar calado
+    _invalidos = [a["name"] for a in ASSETS
+                  if st.session_state.get(f"hor_{a['name']}", "").strip()
+                  and a["name"] not in _hor_novo]
+    if _invalidos:
+        st.warning(f"Horário não reconhecido em: {', '.join(_invalidos)}. "
+                   f"Use o formato `HH:MM-HH:MM`. Esses ativos ficaram **sem** "
+                   f"restrição de horário.")
+
     st.markdown("**Payout por ativo** — o breakeven muda com o payout, então vale "
                 "conferir o de cada par na sua corretora. Em branco = usa o padrão.")
     pc1, pc2 = st.columns(2)
@@ -1906,6 +1999,7 @@ cfg_save({
     "f_news_on": bool(f_news_on), "f_news_min": int(f_news_min),
     "f_news_txt": str(f_news_txt), "cb_on": bool(cb_on), "cb_n": int(cb_n),
     "radar": bool(radar_on), "premium": bool(prem_on),
+    "horarios_ativo": _hor_novo, "usar_horarios_ativo": bool(usar_hor_ativo),
     "cb_pausa": int(cb_pausa),
 })
 
@@ -2000,8 +2094,29 @@ st.session_state["ultimo_ck"] = _ck_now
 # escolher "só cripto" também economiza créditos da Twelve Data.
 _tipo = {"Só forex": "fx", "Só cripto": "crypto"}.get(mercado)
 _universo = [a for a in ASSETS if _tipo is None or a["type"] == _tipo]
-open_assets = [a for a in _universo if pair_open(a, now)]
+# Valores dos WIDGETS, não do CFG: cfg_save troca o dicionário em session_state
+# por um novo, e a variável CFG continua apontando para o antigo — a grade só
+# passaria a valer no rerun seguinte, e mudar o horário pareceria não funcionar.
+GRADE_CORRETORA = _hor_novo
+USAR_GRADE = bool(usar_hor_ativo)
+
+
+def negociavel(a, quando):
+    """Só a sessão de mercado. O veto da corretora é aplicado à parte."""
+    return pair_open(a, quando)
+
+
+open_assets = [a for a in _universo if negociavel(a, now)]
 scan_list = _universo if show_closed else open_assets
+# O veto da corretora vale SEMPRE que estiver ligado, inclusive com "incluir
+# pares fora de sessão". São coisas diferentes: aquele toggle é sobre liquidez
+# do interbancário; este é sobre o botão existir na sua tela da Bullex. De nada
+# adianta um sinal num ativo que a corretora não deixa você operar.
+fechados_corretora = []
+if USAR_GRADE:
+    fechados_corretora = [a["name"] for a in scan_list
+                          if not aberto_na_corretora(a["name"], now, GRADE_CORRETORA)]
+    scan_list = [a for a in scan_list if a["name"] not in fechados_corretora]
 t_scan0 = time.perf_counter()
 data, fetch_s = get_data_live(scan_list, interval, minutes)
 if not fetch_s:
@@ -3027,6 +3142,26 @@ with tab_res:
             'tivesse operado todos os sinais, inclusive os que não operou. Serve para '
             'julgar o sistema; não serve para conferir dinheiro.</div></div>',
             unsafe_allow_html=True)
+
+    # ---- a configuração foi perdida? ----
+    # Sem Gist, o kairo_config.json vive no disco efêmero do Streamlit Cloud e
+    # some a cada rebuild — inclusive a cada deploy meu. O valor por entrada
+    # voltava para o padrão de 10 sem avisar, e as operações seguintes eram
+    # gravadas com o valor errado. Comparar o que está configurado agora com o
+    # que os sinais recentes gravaram expõe isso na hora.
+    _rec = [h for h in hist if isinstance(h.get("stake"), (int, float)) and h["stake"]]
+    if _rec:
+        _ult = float(sorted(_rec, key=lambda x: x["ts"])[-1]["stake"])
+        if abs(_ult - float(stake)) > 0.005:
+            st.markdown(
+                f'<div class="win alert"><span class="pt"></span><div class="msg">'
+                f'<b>O valor por entrada mudou.</b> O último sinal foi gravado com '
+                f'<b>{_ult:.2f}</b> e agora está configurado <b>{float(stake):.2f}</b>. '
+                f'Se você não mudou de propósito, a configuração se perdeu num '
+                f'reinício do servidor — sem o Gist configurado isso acontece a cada '
+                f'rebuild do app. Corrija em Ajustes antes de operar mais, senão as '
+                f'próximas operações entram com o valor errado.</div></div>',
+                unsafe_allow_html=True)
 
     # Sinais gravados antes de existir "valor por entrada" — ou com valor zerado —
     # não entram no cálculo financeiro. Antes sumiam sem explicação nenhuma.
