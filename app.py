@@ -858,6 +858,19 @@ div[data-testid="stExpander"] summary:hover{color:var(--ink)}
 .horas .h-linha.be{position:absolute;left:16px;right:16px;top:52%;
   border-top:1px dashed var(--warn);opacity:.55}
 
+/* Cartão secundário é link: precisa parecer clicável sem virar botão. */
+a.card{display:block;text-decoration:none!important;color:inherit;
+  transition:transform .12s,border-color .12s,box-shadow .12s}
+a.card:hover{transform:translateY(-2px);border-color:var(--line2);
+  box-shadow:0 6px 20px -12px rgba(0,0,0,.9)}
+a.card .abrir{display:block;margin-top:9px;font-size:.6rem;letter-spacing:.08em;
+  text-transform:uppercase;color:var(--mut);font-weight:600;opacity:0;
+  transition:opacity .12s}
+a.card:hover .abrir{opacity:1}
+.volta{margin:-4px 0 var(--gap-bloco)}
+.volta a{font-size:.7rem;color:var(--mut);text-decoration:none!important}
+.volta a:hover{color:var(--ink2)}
+
 /* barra do que foi registrado na vela atual */
 .regbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;
   margin:var(--gap-curto) 0 var(--gap-bloco);font-size:.7rem}
@@ -989,6 +1002,20 @@ div[data-testid="stExpander"]{margin:2px 0 var(--gap-curto)}
 # no cabeçalho, alinhado à direita, e o estado sobrevive a recarregar a página.
 auto_on = st.query_params.get("live", "1") != "0"
 foco = st.query_params.get("foco", "0") == "1"
+# Ativo promovido ao destaque por clique. Vem da URL pelo mesmo mecanismo do
+# "Ao vivo" e do "Foco" — sem isso não haveria como clicar num cartão de HTML.
+ativo_sel = st.query_params.get("ativo", "")
+
+
+def url_com(**kw):
+    """Monta o link preservando os outros estados da URL."""
+    from urllib.parse import quote
+    base = {"live": "1" if auto_on else "0", "foco": "1" if foco else "0"}
+    if ativo_sel:
+        base["ativo"] = ativo_sel
+    base.update({k: v for k, v in kw.items() if v is not None})
+    base = {k: v for k, v in base.items() if v != ""}
+    return "?" + "&".join(f"{k}={quote(str(v))}" for k, v in base.items())
 
 # --- Persistência remota (opcional) ---------------------------------------
 # O disco do Streamlit Cloud é EFÊMERO: todo rebuild do app zera o container e
@@ -1745,12 +1772,12 @@ def chips(e, big=False):
     return f'<div class="strats">{c}</div>'
 
 
-def hero_html(e, cvela):
+def hero_html(e, cvela, tag_destaque="Melhor entrada"):
     cls = "buy" if e["dir"] == "COMPRA" else "sell"
     ar = "▲" if e["dir"] == "COMPRA" else "▼"
     return f"""<div class="hero {cls}">
       <div class="hero-main">
-        <div class="h-tag">Melhor entrada</div>
+        <div class="h-tag">{tag_destaque}</div>
         <div class="h-pair">{e["a"]["name"]}</div>
         <div class="h-dir"><span class="ar">{ar}</span>{e["dir"]}</div>
         <div class="fb">{bars(e["force"])}<span class="lbl2">Força {FL[e["force"]].lower()}</span></div>
@@ -1765,14 +1792,19 @@ def hero_html(e, cvela):
 
 
 def card_html(e):
+    """Cartão clicável: promove o ativo ao destaque, onde as estratégias
+    aparecem por extenso. Com pares correlacionados (EUR/JPY e USD/JPY, por
+    exemplo) é preciso poder comparar os dois de perto antes de escolher um."""
     cls = "buy" if e["dir"] == "COMPRA" else "sell"
     ar = "▲" if e["dir"] == "COMPRA" else "▼"
-    return (f'<div class="card {cls}"><div class="top"></div><div class="body">'
+    return (f'<a class="card {cls}" target="_self" href="{url_com(ativo=e["a"]["name"])}" '
+            f'title="Abrir {e["a"]["name"]} em destaque">'
+            f'<div class="top"></div><div class="body">'
             f'<div class="row1"><span class="p">{e["a"]["name"]}</span>'
             f'<span class="px">{fmt_price(e["a"]["name"], e.get("px"))}</span></div>'
             f'<div class="d">{ar} {e["dir"]}</div>'
             f'<div class="fb">{bars(e["force"])}<span class="lbl2">{FL[e["force"]].lower()}</span></div>'
-            f'{chips(e)}</div></div>')
+            f'{chips(e)}<span class="abrir">ver estratégias →</span></div></a>')
 
 
 # ============================== ABA SINAIS ==============================
@@ -1882,16 +1914,29 @@ with tab_sig:
             f'<span class="v">Ajustes</span></div></div>', unsafe_allow_html=True)
     elif entries:
         dim = "" if window_open else " stale"
+        # Se você clicou num cartão, aquele ativo assume o destaque. Sem clique,
+        # vale a ordenação normal (mais estratégias concordando primeiro).
+        _idx = next((i for i, e in enumerate(entries)
+                     if e["a"]["name"] == ativo_sel), 0)
+        _destaque = entries[_idx]
+        _manual = _idx > 0
         # Realce só quando a entrada em destaque REALMENTE mudou (ativo, direção
         # ou vela). Sem isso o cartão brilharia a cada rerun, que é o problema
         # que acabamos de tirar da tela.
-        _chave = (entries[0]["a"]["name"], entries[0]["dir"], candle_key(minutes))
+        _chave = (_destaque["a"]["name"], _destaque["dir"], candle_key(minutes))
         novo_sinal = st.session_state.get("ultimo_sinal") != _chave
         st.session_state["ultimo_sinal"] = _chave
         _cls = f'hero{dim}{" novo" if novo_sinal else ""} '
-        st.markdown(hero_html(entries[0], cvela).replace('class="hero ', f'class="{_cls}'),
+        st.markdown(hero_html(_destaque, cvela,
+                              "Entrada selecionada" if _manual else "Melhor entrada"
+                              ).replace('class="hero ', f'class="{_cls}'),
                     unsafe_allow_html=True)
-        rest = entries[1:]
+        if _manual:
+            st.markdown(
+                f'<div class="volta"><a target="_self" href="{url_com(ativo="")}">'
+                f'← voltar para a melhor entrada ({entries[0]["a"]["name"]})</a></div>',
+                unsafe_allow_html=True)
+        rest = [e for i, e in enumerate(entries) if i != _idx]
         st.markdown(f'<div class="sect">Outras entradas · {len(entries)} no total</div>',
                     unsafe_allow_html=True)
         if rest:
@@ -1923,7 +1968,7 @@ with tab_sig:
                 for m, v in _conc[:3])
             st.markdown(
                 f'<div class="win alert"><span class="pt"></span><div class="msg">'
-                f'<b>Exposição concentrada.</b> {_txt}. Essas entradas não são '
+                f'<b>Exposição concentrada</b> — {_txt}. Essas entradas não são '
                 f'independentes: elas ganham e perdem juntas conforme essa moeda se '
                 f'mexe. Operar as {len(entries)} como se fossem apostas separadas '
                 f'multiplica o risco em vez de diluí-lo.</div></div>',
