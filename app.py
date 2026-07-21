@@ -3382,7 +3382,9 @@ with tab_perf:
                 unsafe_allow_html=True)
             if min_force != "FRACA":
                 st.caption(
-                    f"A *força mínima* está em **{FL[min_force].lower()}**, então a "
+                    # `min_force` vem do slider e JÁ está com acento ("MÉDIA");
+                    # FL é indexado sem acento e explodia com KeyError aqui.
+                    f"A *força mínima* está em **{min_force.lower()}**, então a "
                     f"coluna «ao vivo» nunca vai receber operações abaixo disso — o que "
                     f"não é gravado não pode ser analisado depois. Para comparar as três "
                     f"faixas ao vivo, deixe a força mínima em **fraca** por um período.")
