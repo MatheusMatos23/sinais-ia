@@ -2092,6 +2092,29 @@ def horas_backtest(d, score, hb, acc):
         acc[int(h_)][1] += int(v)
 
 
+def forcas_backtest(d, score, acc):
+    """
+    Mesma regra do backtest(), agregando por FAIXA DE FORÇA em vez de por hora.
+
+    A régua é idêntica à do ao vivo — classify() usa |score| >= 0,80 FORTE,
+    >= 0,60 MÉDIA, >= MIN_SCORE FRACA — para as duas colunas da tabela serem
+    comparáveis de fato. Se aqui usasse outro corte, "backtest × ao vivo"
+    estaria comparando coisas diferentes e a diferença não significaria nada.
+    """
+    o_next, c_next = d["Open"].shift(-1), d["Close"].shift(-1)
+    mag = score.abs()
+    ok = (mag >= MIN_SCORE) & o_next.notna() & c_next.notna() & (c_next != o_next)
+    if not bool(ok.any()):
+        return
+    win = pd.Series(np.where(score > 0, c_next > o_next, c_next < o_next), index=d.index)
+    for k, cond in (("FORTE", mag >= 0.80),
+                    ("MEDIA", (mag >= 0.60) & (mag < 0.80)),
+                    ("FRACA", (mag >= MIN_SCORE) & (mag < 0.60))):
+        m = ok & cond
+        acc[k][0] += int(m.sum())
+        acc[k][1] += int((m & win).sum())
+
+
 def run_perf():
     """
     Backtest de todas as estratégias.
@@ -2110,6 +2133,7 @@ def run_perf():
     dhist = get_data_hist(scan_list, interval)      # janela grande, cache de 10 min
     out = {n: {"hoje": [0, 0], "per": [0, 0]} for n in STRATEGIES}
     horas = {h: [0, 0] for h in range(24)}          # hora BRT -> [ops, acertos]
+    forcas = {"FORTE": [0, 0], "MEDIA": [0, 0], "FRACA": [0, 0]}   # força -> [ops, acertos]
     for a in scan_list:
         df = dhist.get(a["name"])
         if df is None or len(df) < 80:
@@ -2133,7 +2157,8 @@ def run_perf():
             # operar" sobre estratégias que você não usa não responde nada.
             if name in sel_strats:
                 horas_backtest(d, sc, hb, horas)
-    return {"est": out, "horas": horas}
+                forcas_backtest(d, sc, forcas)
+    return {"est": out, "horas": horas, "forcas": forcas}
 
 
 def get_perf(calcular=False):
@@ -2817,6 +2842,18 @@ with tab_res:
                  "para avaliar o sistema, não para conferir o extrato.")
     _so_exec = _modo == "Só o que executei"
     _res_base = _base_exec if _so_exec else _base_todos
+
+    # ---- filtro por força do sinal ----
+    # A força é função direta da magnitude do score (FORTE >= 0,80 · MÉDIA >= 0,60
+    # · FRACA >= 0,50). "Sinal mais forte acerta mais" é a hipótese mais natural do
+    # sistema e nunca tinha sido testada — o dado já estava gravado em todo sinal,
+    # só não havia por onde olhar.
+    _f_forca = st.multiselect("Força do sinal", ["FRACA", "MEDIA", "FORTE"],
+                              default=[], format_func=lambda v: FL[v].capitalize(),
+                              placeholder="Todas as forças",
+                              key="res_forca")
+    if _f_forca:
+        _res_base = [h for h in _res_base if h.get("force") in _f_forca]
     with _b2:
         _nao_marcadas = len(_base_todos) - len(_base_exec)
         st.markdown(
@@ -3008,6 +3045,21 @@ with tab_res:
                         f'<th>Resultado</th><th>Ops</th><th>Acerto</th><th>Payout</th>'
                         f'<th>Veredito</th></tr>{linhas}</table>', unsafe_allow_html=True)
 
+        # A força vem primeiro: se ela separar o joio do trigo, é a alavanca mais
+        # simples que existe — basta subir a força mínima em Ajustes. Nenhuma
+        # outra quebra é acionável com um controle só.
+        tabela_quebra("Resultado por força do sinal",
+                      lambda h: FL.get(h.get("force", "FRACA"),
+                                       h.get("force", "FRACA")).capitalize(),
+                      _res_base)
+        st.markdown(
+            '<div class="note">A força é a magnitude do score: <b>forte</b> a partir '
+            'de 0,80 · <b>média</b> de 0,60 · <b>fraca</b> de 0,50. Se as linhas não '
+            'se separarem, a força não está dizendo nada sobre acerto — e aí subir a '
+            'força mínima só reduz o número de operações sem melhorar nada. '
+            'Atenção ao tamanho de cada amostra: dividir em três faz cada faixa '
+            'levar três vezes mais tempo para concluir qualquer coisa.</div>',
+            unsafe_allow_html=True)
         tabela_quebra("Resultado por estratégia", lambda h: h["strats"], _res_base)
         tabela_quebra("Resultado por ativo", lambda h: h["asset"], _res_base)
         tabela_quebra("Resultado por timeframe",
@@ -3277,6 +3329,64 @@ with tab_perf:
                         'abaixo disso a diferença é ruído.</div>',
                         unsafe_allow_html=True)
 
+        # ---------- FORÇA DO SINAL: BACKTEST × AO VIVO ----------
+        # No backtest a força sai direto do score, sem depender de nada gravado:
+        # é a mesma régua do ao vivo (>=0,80 forte · >=0,60 média · >=0,50 fraca)
+        # aplicada às mesmas velas. Assim as duas colunas são comparáveis de fato.
+        # `.get` com padrão: um cache gravado por uma versão anterior do app não
+        # tem esta chave, e sem o padrão a aba quebraria até o próximo recálculo.
+        _bt_forca = (cp["dados"].get("forcas")
+                     or {"FORTE": [0, 0], "MEDIA": [0, 0], "FRACA": [0, 0]})
+        _viv_forca = {}
+        for h in hist:
+            if h.get("res") in ("ganhou", "perdeu") and h.get("tf") == minutes:
+                _a = _viv_forca.setdefault(h.get("force", "FRACA"), [0, 0])
+                _a[0] += 1
+                _a[1] += h["res"] == "ganhou"
+
+        if any(v[0] for v in _bt_forca.values()):
+            _lf = ""
+            for _k in ("FORTE", "MEDIA", "FRACA"):
+                _nb_, _wb_ = _bt_forca[_k]
+                _nv_, _wv_ = _viv_forca.get(_k, [0, 0])
+                _pb_ = f'{pct(_wb_ / _nb_ * 100, 1)}' if _nb_ else "—"
+                _pv_ = f'{pct(_wv_ / _nv_ * 100, 1)}' if _nv_ >= 20 else "—"
+                _dif_ = (f'{_wv_/_nv_*100 - _wb_/_nb_*100:+.1f} pp'
+                         if _nb_ and _nv_ >= 20 else
+                         (f'{_nv_} ops ao vivo' if _nv_ else "sem dados ao vivo"))
+                _cls_ = ""
+                if _nb_ and _nv_ >= 20:
+                    _dd_ = _wv_/_nv_*100 - _wb_/_nb_*100
+                    _cls_ = "bad" if _dd_ <= -5 else ("good" if _dd_ >= 5 else "mid")
+                _lf += (f'<tr><td class="nm">{FL[_k].capitalize()}</td>'
+                        f'<td class="n mono">{_pb_}<span class="n"> · {_nb_} ops</span></td>'
+                        f'<td class="n mono">{_pv_}'
+                        f'<span class="n"> · {_nv_} ops</span></td>'
+                        f'<td class="mono {_cls_}" style="font-weight:700">{_dif_}</td></tr>')
+            st.markdown('<div class="sect">Força do sinal · backtest × ao vivo</div>',
+                        unsafe_allow_html=True)
+            st.markdown(f'<table class="tbl"><tr><th>Força</th><th>Backtest</th>'
+                        f'<th>Ao vivo</th><th>Diferença</th></tr>{_lf}</table>',
+                        unsafe_allow_html=True)
+            _be_f = breakeven(PAYOUT) * 100
+            st.markdown(
+                f'<div class="note">A pergunta que esta tabela responde é se score '
+                f'maior acerta mais. No backtest a resposta sai na hora, com dezenas '
+                f'de milhares de velas; ao vivo demora, e por isso a coluna só mostra '
+                f'taxa a partir de 20 operações.<br>'
+                f'Compare as linhas <b>entre si</b>, não com o breakeven de '
+                f'{pct(_be_f, 1)}. Se forte e fraca derem a mesma coisa no backtest, a '
+                f'força não carrega informação e restringir por ela só reduz o número '
+                f'de operações. Se separarem no backtest mas não ao vivo, o que se '
+                f'perdeu no caminho é execução, não estratégia.</div>',
+                unsafe_allow_html=True)
+            if min_force != "FRACA":
+                st.caption(
+                    f"A *força mínima* está em **{FL[min_force].lower()}**, então a "
+                    f"coluna «ao vivo» nunca vai receber operações abaixo disso — o que "
+                    f"não é gravado não pode ser analisado depois. Para comparar as três "
+                    f"faixas ao vivo, deixe a força mínima em **fraca** por um período.")
+
         # ---------- MELHORES HORÁRIOS ----------
         tot_h = sum(v[0] for v in horas.values())
         if tot_h >= 500:
@@ -3379,7 +3489,7 @@ with tab_hist:
         # Cinco filtros numa linha só. Antes eram quatro aqui e o quinto
         # (Configuração) ocupava a largura inteira sozinho na linha de baixo,
         # com o "?" solto lá na ponta — desequilibrava a grade toda.
-        f1, f2, f3, f4, f5 = st.columns([1.7, 1.25, 0.9, 0.9, 1.5])
+        f1, f2, f3, f4, f5, f6 = st.columns([1.5, 1.1, 0.8, 0.8, 1.0, 1.3])
         with f1:
             todas_est = sorted({s for h in hist for s in h["strats"]})
             f_est = st.multiselect("Estratégia", todas_est, default=[],
@@ -3406,12 +3516,20 @@ with tab_hist:
                 help="Cada sinal guarda a configuração que estava ativa quando foi "
                      "gerado. Comparar taxas entre configurações diferentes não "
                      "responde nada — filtre por uma de cada vez.")
+        with f6:
+            # A força já vinha gravada em todo sinal desde o começo; faltava por
+            # onde olhar. É a quebra mais acionável que existe: se ela separar,
+            # basta subir a força mínima em Ajustes.
+            f_frc = st.multiselect("Força", ["FRACA", "MEDIA", "FORTE"], default=[],
+                                   format_func=lambda v: FL[v].capitalize(),
+                                   placeholder="Todas")
         vis = [h for h in hist
                if (not f_est or any(x in f_est for x in h["strats"]))
                and (not f_res or (h["res"] or "aguardando") in f_res)
                and (not f_tf or h.get("tf") in f_tf)
                and (not f_mkt or TIPO_ATIVO.get(h["asset"]) in f_mkt)
-               and (not f_coo or h.get("coorte") in f_coo)]
+               and (not f_coo or h.get("coorte") in f_coo)
+               and (not f_frc or h.get("force") in f_frc)]
         filtrado = len(vis) != len(hist)
         if filtrado:
             st.caption(f"Filtro ativo: {len(vis)} de {len(hist)} sinais. "
@@ -3661,6 +3779,37 @@ with tab_hist:
             st.caption("Só ganha sentido com algumas centenas de operações. Até lá os "
                        "intervalos vão ficar largos e o veredito, não conclusivo — isso é "
                        "o esperado, não um defeito.")
+
+        # ---- a força do sinal prevê alguma coisa? ----
+        # Hipótese mais natural do sistema e nunca testada: score maior deveria
+        # acertar mais. Se as três linhas ficarem coladas, a força não carrega
+        # informação sobre acerto — e subir a força mínima passa a ser só perder
+        # operação em troca de nada.
+        _por_forca = {}
+        for h in vis:
+            _por_forca.setdefault(h.get("force", "FRACA"), []).append(h)
+        if len(_por_forca) > 1:
+            linhas = "".join(
+                linha_ic(FL.get(k, k).capitalize(), "força", _por_forca[k],
+                         payout_do(_por_forca[k]))
+                for k in ("FORTE", "MEDIA", "FRACA") if k in _por_forca)
+            st.markdown('<div class="sect">A força do sinal prevê acerto?</div>',
+                        unsafe_allow_html=True)
+            st.markdown(f'<table class="tbl"><tr><th>Força</th><th>Tipo</th><th>Ops</th>'
+                        f'<th>Acerto</th><th>IC95</th><th>Veredito</th>'
+                        f'</tr>{linhas}</table>', unsafe_allow_html=True)
+            st.caption(
+                "Compare as linhas entre si, não cada uma com o breakeven. Se forte e "
+                "fraca derem praticamente o mesmo, a força não separa nada — e aí não "
+                "há por que restringir por ela. Lembre que dividir a amostra em três "
+                "triplica o tempo até qualquer faixa concluir alguma coisa.")
+        elif len(_por_forca) == 1:
+            _k = next(iter(_por_forca))
+            st.caption(
+                f"Só há sinais de força **{FL.get(_k, _k).lower()}** no histórico, "
+                f"então não dá para comparar forças. Para medir isso, a *força mínima* "
+                f"em Ajustes precisa estar em **fraca** — ela decide o que chega a ser "
+                f"gravado, e o que não é gravado nunca poderá ser analisado.")
 
         # ---- efeito do SEU atraso de execução ----
         # A vantagem que a estratégia mede está no movimento abertura->fechamento.
