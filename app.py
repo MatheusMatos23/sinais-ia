@@ -92,7 +92,15 @@ ASSETS = [
     {"name": "USD/JPY", "yf": "USDJPY=X", "cur": ["USD", "JPY"], "type": "fx", "voz": "Dólar Iene"},
     {"name": "AUD/USD", "yf": "AUDUSD=X", "cur": ["AUD", "USD"], "type": "fx", "voz": "Dólar Australiano"},
     {"name": "USD/CAD", "yf": "USDCAD=X", "cur": ["USD", "CAD"], "type": "fx", "voz": "Dólar Canadense"},
-    {"name": "USD/CHF", "yf": "USDCHF=X", "cur": ["USD", "CHF"], "type": "fx", "voz": "Dólar Franco"},
+    # USD/CHF REMOVIDO em 21/07/2026: a Bullex abre ele só 10:00-14:00 em dias
+    # úteis (20h por semana, a menor janela de todas) e a expiração mínima é de
+    # 5 min. Pouca oportunidade para o custo de varredura que ele impõe.
+    # {"name": "USD/CHF", "yf": "USDCHF=X", "cur": ["USD", "CHF"], "type": "fx", "voz": "Dólar Franco"},
+    # EUR/GBP entrou no lugar. ATENÇÃO: grade e payout ainda NÃO conferidos na
+    # corretora — sem grade cadastrada ele segue o critério de sessão, e sem
+    # payout próprio usa o padrão. Confira os dois antes de confiar nos números
+    # dele; foi assim que o NZD/USD passou despercebido pagando 30%.
+    {"name": "EUR/GBP", "yf": "EURGBP=X", "cur": ["EUR", "GBP"], "type": "fx", "voz": "Euro Libra"},
     # NZD/USD REMOVIDO em 21/07/2026. A Bullex paga 30% de payout nele, o que
     # põe o breakeven em 76,92%. A melhor taxa já medida neste sistema, em 62 mil
     # operações de backtest, foi ~54% — a 54% de acerto o par rende -29,8% por
@@ -118,7 +126,6 @@ GRADE_BULLEX_TXT = {
     # estes fecham no fim de semana inteiro e têm janela única
     "AUD/USD": "seg-sex 00:00-14:00",
     "USD/CAD": "seg-sex 03:00-15:00",
-    "USD/CHF": "seg-sex 10:00-14:00",
     # cripto negocia 24/7 na corretora: sem grade = sem restrição
 }
 SESSIONS = {"Sydney": (21, 6), "Tóquio": (23, 8), "Londres": (7, 16), "Nova York": (12, 21)}
@@ -171,6 +178,40 @@ def _hhmm(txt):
 DIAS_SIG = {"seg": 0, "ter": 1, "qua": 2, "qui": 3, "sex": 4, "sab": 5, "sáb": 5,
             "dom": 6}
 DIAS_NOME = ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"]
+
+
+def horas_operaveis(grade, nomes):
+    """
+    Horas (0-23, Brasília) em que ALGUM dos ativos abre em dia útil.
+
+    O backtest agrega as 24 horas do dia, mas a corretora fecha o forex inteiro
+    das 16h às 21h. Sem este recorte, o painel "melhores horários" podia eleger
+    uma hora em que não há como operar — conselho pior que nenhum, porque ocupa
+    o lugar de uma hora aproveitável no ranking.
+    Dia útil como referência: fim de semana tem grade própria e recomendar
+    horário com base nele descreveria outra coisa.
+    """
+    horas = set()
+    for nome in nomes:
+        bruto = (grade or {}).get(nome)
+        if not bruto:
+            horas |= set(range(24))       # sem grade = sem restrição conhecida
+            continue
+        for dsem in range(5):             # segunda a sexta
+            faixas = (bruto.get(dsem, bruto.get(str(dsem)))
+                      if isinstance(bruto, dict) else bruto) or []
+            for par in faixas:
+                if not isinstance(par, (list, tuple)) or len(par) != 2:
+                    continue
+                ini, fim = _hhmm(par[0]), _hhmm(par[1])
+                if ini is None or fim is None:
+                    continue
+                h_i, h_f = ini // 60, (fim - 1) // 60
+                if ini < fim:
+                    horas |= set(range(h_i, h_f + 1))
+                else:                      # faixa que atravessa a meia-noite
+                    horas |= set(range(h_i, 24)) | set(range(0, h_f + 1))
+    return horas
 
 
 def parse_grade(texto):
@@ -1268,6 +1309,9 @@ div[data-testid="stExpander"] details{background:var(--surf);border:1px solid va
 .horas .hcol i.vazio{background:repeating-linear-gradient(45deg,
   rgba(255,255,255,.05) 0 3px,transparent 3px 6px);height:8px}
 .horas .hh{font-family:'IBM Plex Mono',monospace;font-size:.56rem;color:var(--mut)}
+/* hora em que a corretora não abre nenhum ativo: fica visível mas apagada, para
+   não parecer que faltou dado — faltou mercado. */
+.horas .hh.fechada{opacity:.3;text-decoration:line-through}
 .horas .h-linha.be{position:absolute;left:16px;right:16px;top:52%;
   border-top:1px dashed var(--warn);opacity:.55}
 
@@ -1401,6 +1445,24 @@ body.foco [data-testid="stTabs"] [role="tabpanel"]{min-height:0}
    Os três contadores ficam sempre visíveis, ao lado do seletor. A diferença
    entre "executadas" e "resolvidas" é a informação mais importante da aba: é
    ela que diz o quanto do número é a sua operação e o quanto é hipótese. */
+/* ---------- SAÚDE DO EXPERIMENTO ----------
+   A borda esquerda carrega o estado. Verde não é elogio: é "nada exige sua
+   atenção aqui". Âmbar não é erro: é "isto muda o que os números significam". */
+.sdrow{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px;
+  margin:var(--gap-curto) 0 var(--gap-bloco)}
+.sd{background:var(--surf);border:1px solid var(--line);border-left:3px solid var(--line2);
+  border-radius:var(--r);padding:12px 15px;display:flex;flex-direction:column;gap:3px;
+  min-height:88px}
+.sd .k{font-size:.56rem;letter-spacing:.14em;text-transform:uppercase;color:var(--mut);
+  font-weight:600}
+.sd .v{font-size:1.05rem;font-weight:700;color:var(--ink);font-variant-numeric:tabular-nums}
+.sd .x{font-size:.63rem;color:var(--mut);line-height:1.45;margin-top:auto}
+.sd-ok{border-left-color:var(--buy)}
+.sd-warn{border-left-color:var(--warn)}
+.sd-bad{border-left-color:var(--sell)}
+.sd-bad .v{color:var(--sell)}
+.sd-warn .v{color:var(--warn)}
+
 .basebox{display:flex;flex-wrap:wrap;gap:10px}
 .basebox span{display:flex;flex-direction:column;gap:2px;flex:1;min-width:120px;
   background:var(--surf);border:1px solid var(--line);border-radius:var(--r);
@@ -3666,6 +3728,69 @@ with tab_res:
 
 # ============================== ABA DESEMPENHO ==============================
 with tab_perf:
+    # ---------- SAÚDE DO EXPERIMENTO ----------
+    # Antes disto, saber se o teste estava íntegro exigia caçar em cinco abas.
+    # Num único dia o valor por entrada voltou para o padrão sem avisar e o
+    # backtest zerou — os dois passaram despercebidos por horas justamente
+    # porque nada olhava o experimento como um todo. Este bloco responde as
+    # perguntas que precedem qualquer taxa: o dado está sendo salvo? a
+    # configuração mudou no meio? há operação presa? quanto falta para concluir?
+    _saude = []
+
+    def _card_saude(rot, val, obs, estado="ok"):
+        _saude.append(f'<div class="sd sd-{estado}"><span class="k">{rot}</span>'
+                      f'<span class="v">{val}</span><span class="x">{obs}</span></div>')
+
+    _fech_tot = [h for h in hist if h.get("res") in ("ganhou", "perdeu")]
+    _abertos_tot = [h for h in hist if h.get("res") is None]
+
+    # 1) persistência
+    if HIST_REMOTO:
+        _card_saude("Backup", "Gist ativo",
+                    "sobrevive a reinício e a deploy", "ok")
+    else:
+        _card_saude("Backup", "só no disco",
+                    "tudo abaixo some no próximo rebuild", "bad")
+
+    # 2) mistura de coortes — a armadilha silenciosa do forward test
+    _co = {h.get("coorte") for h in _fech_tot if h.get("coorte")}
+    if len(_co) <= 1:
+        _card_saude("Configuração", "estável",
+                    "todas as operações na mesma coorte", "ok")
+    else:
+        _card_saude("Configuração", f"{len(_co)} coortes",
+                    "a taxa agregada não descreve nenhuma delas", "warn")
+
+    # 3) operações que nunca vão fechar
+    _presos_s = [h for h in _abertos_tot if h.get("tf") != minutes]
+    if not _presos_s:
+        _card_saude("Em aberto", f"{len(_abertos_tot)}",
+                    "aguardando a vela fechar", "ok")
+    else:
+        _card_saude("Em aberto", f"{len(_abertos_tot)}",
+                    f"{len(_presos_s)} de outro timeframe: só apuram se você "
+                    f"voltar a ele", "warn")
+
+    # 4) ritmo e prazo até o veredito
+    if _fech_tot:
+        _dias = max(1, len({br(h["ts"]).date() for h in _fech_tot}))
+        _ritmo = len(_fech_tot) / _dias
+        _w_tot = sum(1 for h in _fech_tot if h["res"] == "ganhou")
+        _falta, _lado = ops_para_concluir(_w_tot, len(_fech_tot), PAYOUT)
+        if _falta:
+            _card_saude("Até concluir", f"{_falta} ops",
+                        f"~{_falta/_ritmo:.0f} dias no ritmo de "
+                        f"{_ritmo:.0f}/dia", "ok")
+        else:
+            _card_saude("Até concluir", "—",
+                        "diferença pequena demais para qualquer amostra "
+                        "resolver com este payout", "warn")
+    else:
+        _card_saude("Até concluir", "—", "sem operações resolvidas ainda", "warn")
+
+    st.markdown('<div class="sect">Saúde do experimento</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="sdrow">{"".join(_saude)}</div>', unsafe_allow_html=True)
+
     VS = {"acima": ("v-good", "acima do breakeven"), "abaixo": ("v-bad", "abaixo do breakeven"),
           "inconclusivo": ("v-mid", "não conclusivo"), "sem dados": ("v-mid", "sem dados")}
 
@@ -3939,9 +4064,19 @@ with tab_perf:
             st.markdown(f'<div class="sect">Horários · {mercado.lower()} · estratégias '
                         f'em uso · horário de Brasília</div>', unsafe_allow_html=True)
             N_H = 150                      # mínimo por hora para a barra valer algo
+            # Horas em que a corretora abre ALGUM ativo. Fora delas o backtest
+            # até tem dado, mas recomendar essas horas seria conselho impossível
+            # de seguir: a Bullex fecha o forex inteiro das 16h às 21h.
+            _h_ok = (horas_operaveis(GRADE_CORRETORA, [a["name"] for a in analise_list])
+                     if USAR_GRADE else set(range(24)))
             col = ""
             for h_ in range(24):
                 n_, w_ = horas[h_]
+                if USAR_GRADE and h_ not in _h_ok:
+                    col += (f'<div class="hcol" title="{h_:02d}h · corretora fechada">'
+                            f'<i class="vazio"></i>'
+                            f'<span class="hh fechada">{h_:02d}</span></div>')
+                    continue
                 if n_ < N_H:
                     col += (f'<div class="hcol"><i class="vazio"></i>'
                             f'<span class="hh">{h_:02d}</span></div>')
@@ -3957,6 +4092,7 @@ with tab_perf:
                         f'<span class="hh">{h_:02d}</span></div>')
             melhores = [(h_, horas[h_]) for h_ in range(24)
                         if horas[h_][0] >= N_H
+                        and (h_ in _h_ok or not USAR_GRADE)
                         and wilson_ci(horas[h_][1], horas[h_][0])[1] * 100 > BE]
             melhores.sort(key=lambda kv: -kv[1][1] / kv[1][0])
             if melhores:
