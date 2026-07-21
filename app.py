@@ -1577,6 +1577,13 @@ def hist_load():
         h.append(r)
     h.sort(key=lambda x: x["ts"])
     st.session_state["hist"] = h
+    # SINCRONIZAÇÃO INICIAL. O Gist só era gravado quando algo mudava, então
+    # depois de configurar os secrets o histórico já existente ficava parado no
+    # disco efêmero esperando o próximo sinal — e se o container reciclasse
+    # antes disso, sumia justamente o que o Gist deveria proteger.
+    # Se o remoto está vazio e há histórico local, envia na hora.
+    if HIST_REMOTO and not remoto and h:
+        gist_save(h)
     return h
 
 
