@@ -133,12 +133,40 @@ def dhm(ts):
     return br(ts).strftime("%d/%m %H:%M")
 
 
+def num_br(txt):
+    """
+    Número no padrão brasileiro: vírgula decimal, ponto de milhar.
+    O app é em português e a corretora mostra 162,517 — exibir 162.517 ao lado
+    disso destoa na hora. Recebe o texto já formatado e só troca os separadores,
+    então a regra de casas decimais continua onde ela é decidida.
+    """
+    return (str(txt).replace(",", "\x00").replace(".", ",").replace("\x00", "."))
+
+
+def nbf(v, casas=1):
+    """
+    Número em pt-BR a partir do valor. Existe porque aspas aninhadas dentro de
+    f-string só passam a valer no Python 3.12 — passando o número em vez do
+    texto, não há aspas nenhuma dentro da chave e roda em qualquer versão.
+    """
+    if v is None or (isinstance(v, float) and not math.isfinite(v)):
+        return "—"
+    return num_br(f"{v:.{casas}f}")
+
+
+def pct(v, casas=1):
+    """Percentual em pt-BR. Não aceita valor inválido calado."""
+    if v is None or not math.isfinite(v):
+        return "—"
+    return num_br(f"{v:.{casas}f}") + "%"
+
+
 def fmt_price(name, v):
     if v is None or not math.isfinite(v):
         return "—"
     if name.startswith(("BTC", "ETH")):
         return f"{v:,.0f}".replace(",", ".")
-    return f"{v:.3f}" if "JPY" in name else f"{v:.5f}"
+    return num_br(f"{v:.3f}") if "JPY" in name else num_br(f"{v:.5f}")
 
 
 def market_open(d):
@@ -549,12 +577,28 @@ div[data-testid="stExpander"]{border:1px solid var(--line);border-radius:var(--r
 div[data-testid="stExpander"] summary{font-weight:600;font-size:.82rem;color:var(--ink2)}
 div[data-testid="stExpander"] summary:hover{color:var(--ink)}
 
-/* ---------- TABS ---------- */
-.stTabs [data-baseweb="tab-list"]{gap:2px;border-bottom:1px solid var(--line);background:transparent}
-.stTabs [data-baseweb="tab"]{background:transparent;border-radius:0;padding:11px 2px;margin-right:26px;
-  font-weight:600;font-size:.86rem;color:var(--mut);border-bottom:2px solid transparent}
-.stTabs [aria-selected="true"]{color:var(--ink);border-bottom:2px solid var(--buy)}
-.stTabs [data-baseweb="tab-highlight"]{display:none}
+/* ---------- TABS ----------
+   DEFINIÇÃO ÚNICA mais abaixo, em [data-testid="stTabs"]. Aqui existia um
+   segundo bloco (.stTabs [data-baseweb=...]) com o estilo de sublinhado, e ele
+   convivia com o de pílula: a aba ativa saía com fundo E sublinhado ao mesmo
+   tempo, o que parecia acidente. É o mesmo tipo de duplicação que já tinha
+   causado a "sobreposição" das abas antes — por isso ficou só uma. */
+
+/* ---------- RÓTULOS DE WIDGET ----------
+   A barra de controles usava micro-caixa-alta (.lbl) e as abas usavam o rótulo
+   padrão do Streamlit, maior e em caixa mista. Eram duas tipografias brigando
+   na mesma tela — o maior resquício de cara "amadora" que sobrou. Agora todo
+   rótulo de widget segue o mesmo sistema. */
+[data-testid="stWidgetLabel"] p,
+[data-testid="stWidgetLabel"] label,
+[data-testid="stWidgetLabel"] div{
+  font-size:.58rem!important;letter-spacing:.14em!important;
+  text-transform:uppercase!important;font-weight:600!important;
+  color:var(--mut)!important;line-height:1.5!important}
+[data-testid="stWidgetLabel"]{margin-bottom:6px}
+/* o "?" de ajuda ficava desalinhado ao lado do rótulo agora menor */
+[data-testid="stTooltipIcon"] svg{width:13px;height:13px;opacity:.5}
+[data-testid="stTooltipIcon"]:hover svg{opacity:.9}
 
 /* ---------- HERO ---------- */
 .hero{display:grid;grid-template-columns:1.35fr 1fr;gap:0;border-radius:var(--r2);overflow:hidden;
@@ -650,13 +694,20 @@ div[data-testid="stExpander"] summary:hover{color:var(--ink)}
 /* ---------- CARTÕES DE NÚMERO (topo do Histórico) ---------- */
 .statrow{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;
   margin:var(--gap-bloco) 0 var(--gap-curto)}
-.stat{background:var(--surf);border:1px solid var(--line);border-radius:var(--r);
-  padding:var(--pad-card);display:flex;flex-direction:column;gap:5px;min-width:0}
+/* min-height comum: só o último cartão tem legenda de duas linhas, e sem isso
+   ele ficava mais alto que os vizinhos e a fileira saía torta.
+   A legenda vai para o rodapé (margin-top:auto) para o número alinhar entre os
+   cartões independentemente do tamanho do texto de baixo. */
+.stat{background:linear-gradient(180deg,rgba(255,255,255,.018),transparent 60%),var(--surf);
+  border:1px solid var(--line);border-radius:var(--r);
+  padding:var(--pad-card);display:flex;flex-direction:column;gap:5px;min-width:0;
+  min-height:104px;transition:border-color .18s ease}
+.stat:hover{border-color:var(--line2)}
 .stat .k{font-size:.58rem;letter-spacing:.14em;text-transform:uppercase;
   color:var(--mut);font-weight:600}
 .stat .v{font-family:'IBM Plex Mono',monospace;font-size:1.6rem;font-weight:600;
   color:var(--ink);line-height:1.1;font-variant-numeric:tabular-nums}
-.stat .x{font-size:.66rem;color:var(--mut);line-height:1.35}
+.stat .x{font-size:.66rem;color:var(--mut);line-height:1.35;margin-top:auto}
 
 /* ---------- BARRA DE RESUMO (topo do Desempenho) ---------- */
 .sumbar{display:flex;align-items:center;justify-content:space-between;gap:24px;flex-wrap:wrap;
@@ -743,7 +794,18 @@ div[data-testid="stMetricValue"]{font-family:'IBM Plex Mono',monospace;font-size
   display:none !important;
 }
 [data-testid="stElementContainer"]:has(.wheel-pass){display:none !important}
+/* O iframe auxiliar não desenha nada — só roda o script que alimenta o cabeçalho
+   e dispara a notificação. A API rejeita altura 0, então ele nascia com 1px; e
+   1px claro sobre fundo escuro aparece como um risquinho no canto do card. O
+   `height:0` do container perdia para a altura do próprio iframe.
+   Solução: tirar o iframe do fluxo (absolute, 1x1, opacidade 0). Ele continua
+   carregado e executando — ao contrário de display:none, que alguns navegadores
+   usam para estrangular timers e quebraria o contador e o aviso de entrada. */
+[data-testid="stElementContainer"]:has(.wheel-pass) + [data-testid="stElementContainer"]{
+  position:relative}
 [data-testid="stElementContainer"]:has(.wheel-pass) + [data-testid="stElementContainer"] iframe{
+  position:absolute!important;top:0;left:0;
+  width:1px!important;height:1px!important;opacity:0!important;
   pointer-events:none;              /* contador é só visual: deixa a roda passar */
 }
 [data-testid="stElementContainer"] iframe{display:block}
@@ -757,8 +819,15 @@ div[data-testid="stMetricValue"]{font-family:'IBM Plex Mono',monospace;font-size
 [data-testid="stTabs"] [role="tablist"]{
   position:sticky;top:0;z-index:30;background:var(--bg);
   overflow:visible!important;
-  gap:4px;padding:8px 0 12px;
-  box-shadow:0 1px 0 var(--line), 0 10px 14px -12px rgba(0,0,0,.9)}
+  gap:4px;padding:8px 0 0;
+  box-shadow:0 10px 14px -12px rgba(0,0,0,.9)}
+/* A régua embaixo das abas era um box-shadow de largura total e parecia borda
+   esquecida atravessando a tela. Vira um degradê que nasce sólido à esquerda,
+   onde as abas estão, e se dissolve à direita. */
+[data-testid="stTabs"] [role="tablist"]::after{
+  content:"";position:absolute;left:0;right:0;bottom:0;height:1px;
+  background:linear-gradient(90deg,var(--line2) 0%,var(--line) 42%,transparent 92%);
+  pointer-events:none}
 [data-testid="stTabs"] [role="tabpanel"]{padding-top:10px}
 
 /* NOTA: já tentei `overflow-anchor:none` aqui e foi um erro. A ancoragem é
@@ -773,7 +842,7 @@ div[data-testid="stMetricValue"]{font-family:'IBM Plex Mono',monospace;font-size
    iframes do app têm title="st.iframe"; a regra ampla espremia também o do
    áudio, que ficava com barra de rolagem. */
 [data-testid="stElementContainer"]:has(.wheel-pass) + [data-testid="stElementContainer"]{
-  min-height:0;height:0;overflow:hidden;margin:0}
+  min-height:0!important;height:0!important;overflow:hidden!important;margin:0!important}
 
 /* ---------- BARRA DE CONTROLES ----------
    O <div class="ctrlbar"> não envolve as colunas (o Streamlit as renderiza como
@@ -806,10 +875,19 @@ div[data-testid="stMetricValue"]{font-family:'IBM Plex Mono',monospace;font-size
    (O gap e o padding da lista ficam SÓ na regra do sticky, mais acima. Havia
    uma segunda declaração aqui que sobrescrevia o padding e colava a pílula na
    linha de baixo — era a "sobreposição" que aparecia na tela.) */
-[data-testid="stTabs"] [role="tab"]{border-radius:9px;padding:7px 15px!important;
-  color:var(--mut);font-weight:600;font-size:.83rem;transition:color .15s,background .15s}
-[data-testid="stTabs"] [role="tab"]:hover{color:var(--ink2);background:rgba(255,255,255,.035)}
-[data-testid="stTabs"] [role="tab"][aria-selected="true"]{color:var(--ink);background:var(--surf2)}
+[data-testid="stTabs"] [role="tab"]{border-radius:9px 9px 0 0;padding:9px 16px!important;
+  color:var(--mut);font-weight:600;font-size:.83rem;position:relative;
+  transition:color .18s ease}
+[data-testid="stTabs"] [role="tab"]:hover{color:var(--ink2)}
+[data-testid="stTabs"] [role="tab"][aria-selected="true"]{color:var(--ink);background:transparent}
+/* Sublinhado como marcador único (sem pílula). O ::after cresce a partir do
+   centro, então trocar de aba tem movimento em vez de um salto seco. */
+[data-testid="stTabs"] [role="tab"]::after{
+  content:"";position:absolute;left:50%;right:50%;bottom:0;height:2px;
+  border-radius:2px 2px 0 0;background:var(--buy);
+  box-shadow:0 0 10px rgba(0,200,138,.45);
+  transition:left .2s ease,right .2s ease}
+[data-testid="stTabs"] [role="tab"][aria-selected="true"]::after{left:10px;right:10px}
 [data-testid="stTabs"] [data-baseweb="tab-highlight"],
 [data-testid="stTabs"] [data-baseweb="tab-border"]{display:none!important}
 
@@ -961,6 +1039,21 @@ body.foco [data-testid="stTabs"] [role="tabpanel"]{min-height:0}
 @media(min-width:1500px){.block-container{max-width:1360px}}
 
 /* Estado vazio do scanner: compacto, é o estado mais comum do app. */
+/* ---------- NÚMEROS ----------
+   Dígito de largura fixa em tudo que atualiza sozinho. Sem isso o relógio, o
+   atraso e as taxas mudam de largura a cada rerun e o texto ao lado "pula". */
+.mono,.stat .v,.chip .cv,.tbl .n,.empty .e-side .v,
+[data-testid="stMetricValue"]{font-variant-numeric:tabular-nums}
+
+/* ---------- PROFUNDIDADE ----------
+   Antes cabeçalho, barra de controles, cartões e tabelas dividiam a MESMA
+   superfície e a MESMA borda — tudo no mesmo plano, sem hierarquia. Três
+   níveis: fundo (--bg) → superfície (--surf) → elevada (--surf-alto), esta
+   última só para o cabeçalho e o cartão em foco. */
+.hdr{background:linear-gradient(180deg,rgba(255,255,255,.030),rgba(255,255,255,.004)),var(--surf2)!important;
+  box-shadow:0 1px 0 rgba(255,255,255,.045) inset, 0 18px 30px -26px rgba(0,0,0,.95)}
+.hero{box-shadow:0 20px 34px -28px rgba(0,0,0,.95)}
+
 .empty{display:flex;align-items:center;gap:18px;background:var(--surf);
   border:1px solid var(--line);border-radius:var(--r2);padding:var(--pad-card)}
 .empty .e-ico{width:42px;height:42px;flex:none;border-radius:12px;display:flex;
@@ -1741,8 +1834,8 @@ def circuit_breaker(hist_, coorte, n, minutos_pausa, payout):
     if br(now) >= solta:
         return False, "", len(ult), w
     return True, (f"{w}/{len(ult)} nas últimas operações desta configuração — "
-                  f"teto do intervalo em {hi*100:.1f}%, abaixo do breakeven de "
-                  f"{breakeven(payout)*100:.1f}%. Volta às "
+                  f"teto do intervalo em {pct(hi*100, 1)}, abaixo do breakeven de "
+                  f"{pct(breakeven(payout)*100, 1)}. Volta às "
                   f"{solta.strftime('%H:%M')}."), len(ult), w
 
 
@@ -2171,9 +2264,9 @@ with tab_sig:
         lag = lag_fonte.get(src)
         val = f'{qtd} ativo{"s" if qtd != 1 else ""}'
         if lag is not None:
-            val += f' · {lag:.1f}min'
+            val += f' · {nbf(lag, 1)}min'
         cs.append(chip(SRC.get(src, src), val, alerta=(src == "yfinance")))
-    cs.append(chip("Busca", f"{fetch_s:.1f}s"))
+    cs.append(chip("Busca", f"{nbf(fetch_s, 1)}s"))
     # Latência da VIRADA: só faz sentido medir no rerun disparado pela troca de
     # vela. Num carregamento manual no meio da vela, _age é a idade da vela e não
     # mede nada — por isso só grava dentro da janela de entrada, e nas demais
@@ -2182,7 +2275,7 @@ with tab_sig:
         st.session_state["turn_lat"] = _age + (time.perf_counter() - t_scan0)
     tl = st.session_state.get("turn_lat")
     cs.append(chip("Sinal pronto em",
-                   f"+{tl:.1f}s da virada" if tl is not None else "aguardando virada",
+                   f"+{nbf(tl, 1)}s da virada" if tl is not None else "aguardando virada",
                    alerta=(tl is not None and tl > 5)))
     if TD_KEY:
         usados, lim, dia = td_status()
@@ -2205,8 +2298,8 @@ with tab_sig:
         v == "yfinance" for k, v in _f.items() if k in varridos)
     lag_pior = max(lag_fonte.values()) if lag_fonte else 0.0
     resumo = ("Fontes com problema" if problema
-              else f"Fontes OK · atraso {lag_pior:.1f}min"
-                   + (f" · sinal +{tl:.1f}s" if tl is not None else ""))
+              else f"Fontes OK · atraso {nbf(lag_pior, 1)}min"
+                   + (f" · sinal +{nbf(tl, 1)}s" if tl is not None else ""))
     st.markdown(
         f'<details class="diagbox"{" open" if problema else ""}>'
         f'<summary><span class="dot {"bad" if problema else "ok"}"></span>{resumo}</summary>'
@@ -2353,6 +2446,9 @@ with tab_sig:
             Ficar sem entrada na maior parte das velas é o comportamento esperado —
             filtro que dispara sempre não está filtrando nada.</span>
           </div>
+          <div class="e-side"><span class="k">Próxima janela</span>
+            <span class="v mono">{int(secs_to_next // 60):02d}:{int(secs_to_next % 60):02d}</span>
+          </div>
           </div>""", unsafe_allow_html=True)
 
     if audio_on:
@@ -2466,8 +2562,8 @@ with tab_res:
             sinal = "good" if d["money"] > 0 else ("bad" if d["money"] < 0 else "mid")
             return (f'<div class="stat"><span class="k">{rot}</span>'
                     f'<span class="v {sinal}">{d["money"]:+.2f}</span>'
-                    f'<span class="x">{d["n"]} ops · {d["taxa"]:.1f}% · IC95 '
-                    f'{d["lo"]:.0f}–{d["hi"]:.0f}% · <b class="{cls}">{txt}</b></span></div>')
+                    f'<span class="x">{d["n"]} ops · {pct(d["taxa"], 1)} · IC95 '
+                    f'{d["lo"]:.0f}–{pct(d["hi"], 0)} · <b class="{cls}">{txt}</b></span></div>')
 
         _hoje = br(now).date()
         _sem = [h for h in _res_base if (_hoje - br(h["ts"]).date()).days <= 6]
@@ -2525,11 +2621,11 @@ with tab_res:
                 f'vector-effect="non-scaling-stroke" stroke-linejoin="round"/></svg>'
                 f'<div class="c-foot"><span>{len(_cap)} operações</span>'
                 f'<span class="mono">resultado {eq[-1]:+.2f} · pior queda {ddmax:.2f}'
-                f'{f" ({ddpct:.0f}% do pico)" if ddpct else ""}</span></div></div>',
+                f'{f" ({pct(ddpct, 0)} do pico)" if ddpct else ""}</span></div></div>',
                 unsafe_allow_html=True)
             st.markdown(
                 f'<div class="note">A tracejada é o que uma <b>moeda</b> renderia nas '
-                f'mesmas apostas: com payout médio de {_pm*100:.0f}%, acertar metade das '
+                f'mesmas apostas: com payout médio de {pct(_pm*100, 0)}, acertar metade das '
                 f'vezes dá prejuízo constante. Estar acima dela não é vantagem — é apenas '
                 f'não estar perdendo no ritmo do acaso.<br><b>Pior queda</b> é a maior '
                 f'distância entre um pico e o vale seguinte. É ela, e não a taxa de '
@@ -2554,8 +2650,8 @@ with tab_res:
                            f'<td class="mono {sinal}" style="font-weight:700">'
                            f'{d["money"]:+.2f}</td>'
                            f'<td class="n mono">{d["n"]}</td>'
-                           f'<td class="n mono">{d["taxa"]:.1f}%</td>'
-                           f'<td class="n mono">{d["pay"]*100:.0f}%</td>'
+                           f'<td class="n mono">{pct(d["taxa"], 1)}</td>'
+                           f'<td class="n mono">{pct(d["pay"]*100, 0)}</td>'
                            f'<td><span class="verd v-{cls if cls != "good" else "good"}">'
                            f'{txt}</span></td></tr>')
             st.markdown(f'<div class="sect">{titulo}</div>', unsafe_allow_html=True)
@@ -2587,8 +2683,8 @@ with tab_res:
             f'{"good" if d1["money"] > 0 else "bad"}">{d1["money"]:+.2f}</b></div>'
             f'<div class="s-side">'
             f'<span><i>{_dif:+.2f}</i>diferença</span>'
-            f'<span><i>{d1["be"]:.1f}%</i>breakeven</span>'
-            f'<span><i>{d1["taxa"]:.1f}%</i>sua taxa</span>'
+            f'<span><i>{pct(d1["be"], 1)}</i>breakeven</span>'
+            f'<span><i>{pct(d1["taxa"], 1)}</i>sua taxa</span>'
             f'<span><i>{VT[d1["verd"]][1]}</i>veredito</span></div></div>',
             unsafe_allow_html=True)
         st.markdown(
@@ -2640,13 +2736,13 @@ with tab_perf:
         v = verdict(w, n, PAYOUT)
         vc, vt = VS[v]
         if n < N_MIN:
-            return (f'<span class="wr faint">{p*100:.1f}%</span>'
-                    f'<span class="ci">IC95 {lo*100:.0f}–{hi*100:.0f}%</span><br>'
+            return (f'<span class="wr faint">{pct(p*100, 1)}</span>'
+                    f'<span class="ci">IC95 {lo*100:.0f}–{pct(hi*100, 0)}</span><br>'
                     f'<span class="n">{n} ops</span>'
                     f'<span class="verd v-faint">amostra pequena</span>')
         cls = "good" if v == "acima" else ("bad" if v == "abaixo" else "mid")
-        return (f'<span class="wr {cls}">{p*100:.1f}%</span>'
-                f'<span class="ci">IC95 {lo*100:.0f}–{hi*100:.0f}%</span><br>'
+        return (f'<span class="wr {cls}">{pct(p*100, 1)}</span>'
+                f'<span class="ci">IC95 {lo*100:.0f}–{pct(hi*100, 0)}</span><br>'
                 f'<span class="n">{n} ops</span><span class="verd {vc}">{vt}</span>')
 
     # Recálculo sob demanda: nada aqui roda sozinho, senão trava a aba Sinais.
@@ -2677,7 +2773,7 @@ with tab_perf:
             st.caption("Aguardando a janela de entrada fechar para rodar o backtest "
                        "— ele não disputa o instante do sinal.")
         else:
-            q = f'calculado às {hm(cp["quando"])} em {cp["levou"]:.1f}s'
+            q = f'calculado às {hm(cp["quando"])} em {nbf(cp["levou"], 1)}s'
             if _mudou_ctx:
                 st.markdown(f'<div class="stale-cap">{q} — com <b>outro timeframe ou '
                             f'lista de ativos</b>. Recalcule.</div>',
@@ -2777,7 +2873,7 @@ with tab_perf:
         outras = [n for n in ranked if n not in sel_strats]
 
         st.markdown(f'<div class="sect">Em uso agora · {TF_LABEL[TF]} · payout {payout_lbl} '
-                    f'· breakeven {BE:.2f}%</div>', unsafe_allow_html=True)
+                    f'· breakeven {pct(BE, 2)}</div>', unsafe_allow_html=True)
         st.markdown(f'<table class="tbl">{cab}{linhas(em_uso)}</table>', unsafe_allow_html=True)
 
         st.markdown('<div class="sect">Todas as estratégias · ordenado pela taxa do período'
@@ -2800,15 +2896,15 @@ with tab_perf:
         for name in ranked:
             _sig = name.split(" · ")[0]
             nv, wv = _viv.get(_sig, [0, 0])
-            nb, wb = perf[name]["per"]
-            if nv < 30 or nb == 0:
+            n_bt, w_bt = perf[name]["per"]   # backtest (nao confundir com o helper num_br)
+            if nv < 30 or n_bt == 0:
                 continue
-            pv, pb = wv / nv * 100, wb / nb * 100
+            pv, pb = wv / nv * 100, w_bt / n_bt * 100
             d = pv - pb
             cls = "bad" if d <= -5 else ("good" if d >= 5 else "mid")
             _linhas_cmp += (f'<tr><td class="nm">{name}</td>'
-                            f'<td class="n mono">{pb:.1f}%<span class="n"> · {nb} ops</span></td>'
-                            f'<td class="n mono">{pv:.1f}%<span class="n"> · {nv} ops</span></td>'
+                            f'<td class="n mono">{pct(pb, 1)}<span class="n"> · {n_bt} ops</span></td>'
+                            f'<td class="n mono">{pct(pv, 1)}<span class="n"> · {nv} ops</span></td>'
                             f'<td class="mono {cls}" style="font-weight:700">{d:+.1f} pp</td>'
                             f'</tr>')
         if _linhas_cmp:
@@ -2842,8 +2938,8 @@ with tab_perf:
                 acima = lo_ * 100 > BE      # IC inteiro acima: o critério de sempre
                 cls_ = "bom" if acima else ("ruim" if p_ < BE else "neutro")
                 alt = max(6, min(100, (p_ - 40) / 20 * 100))
-                col += (f'<div class="hcol" title="{h_:02d}h · {p_:.1f}% em {n_} ops '
-                        f'(IC95 {lo_*100:.0f}–{hi_*100:.0f}%)">'
+                col += (f'<div class="hcol" title="{h_:02d}h · {pct(p_, 1)} em {n_} ops '
+                        f'(IC95 {lo_*100:.0f}–{pct(hi_*100, 0)})">'
                         f'<i class="{cls_}" style="height:{alt:.0f}%"></i>'
                         f'<span class="hh">{h_:02d}</span></div>')
             melhores = [(h_, horas[h_]) for h_ in range(24)
@@ -2851,7 +2947,7 @@ with tab_perf:
                         and wilson_ci(horas[h_][1], horas[h_][0])[1] * 100 > BE]
             melhores.sort(key=lambda kv: -kv[1][1] / kv[1][0])
             if melhores:
-                txt = " · ".join(f"<b>{h_:02d}h</b> {v[1]/v[0]*100:.1f}%"
+                txt = " · ".join(f"<b>{h_:02d}h</b> {pct(v[1]/v[0]*100, 1)}"
                                  for h_, v in melhores[:4])
                 cab_h = f'Horas cujo IC95 inteiro ficou acima do breakeven: {txt}'
             else:
@@ -2864,7 +2960,7 @@ with tab_perf:
                         f'sorte. Use como hipótese a testar no forward test, não como '
                         f'regra — e desconfie se a hora "boa" mudar toda vez que você '
                         f'recalcular. A linha tracejada é o breakeven '
-                        f'({BE:.1f}%); barras cinza têm menos de {N_H} operações.</div>',
+                        f'({pct(BE, 1)}); barras cinza têm menos de {N_H} operações.</div>',
                         unsafe_allow_html=True)
 
         # Exportação do backtest: o Histórico já exportava, o Desempenho não.
@@ -2923,7 +3019,10 @@ with tab_hist:
             ps = [h.get("payout") for h in itens
                   if isinstance(h.get("payout"), (int, float))]
             return (sum(ps) / len(ps)) if ps else PAYOUT
-        f1, f2, f3, f4 = st.columns([2, 1.4, 1, 1])
+        # Cinco filtros numa linha só. Antes eram quatro aqui e o quinto
+        # (Configuração) ocupava a largura inteira sozinho na linha de baixo,
+        # com o "?" solto lá na ponta — desequilibrava a grade toda.
+        f1, f2, f3, f4, f5 = st.columns([1.7, 1.25, 0.9, 0.9, 1.5])
         with f1:
             todas_est = sorted({s for h in hist for s in h["strats"]})
             f_est = st.multiselect("Estratégia", todas_est, default=[],
@@ -2942,13 +3041,14 @@ with tab_hist:
             f_mkt = st.multiselect("Mercado", ["fx", "crypto"], default=[],
                                    format_func=lambda v: "Forex" if v == "fx" else "Cripto",
                                    placeholder="Tudo")
-        _coortes = sorted({h.get("coorte") for h in hist if h.get("coorte")})
-        f_coo = st.multiselect(
-            "Configuração (coorte)", _coortes, default=[],
-            placeholder="Todas as configurações",
-            help="Cada sinal guarda a configuração que estava ativa quando foi "
-                 "gerado. Comparar taxas entre configurações diferentes não "
-                 "responde nada — filtre por uma de cada vez.")
+        with f5:
+            _coortes = sorted({h.get("coorte") for h in hist if h.get("coorte")})
+            f_coo = st.multiselect(
+                "Configuração", _coortes, default=[],
+                placeholder="Todas as configurações",
+                help="Cada sinal guarda a configuração que estava ativa quando foi "
+                     "gerado. Comparar taxas entre configurações diferentes não "
+                     "responde nada — filtre por uma de cada vez.")
         vis = [h for h in hist
                if (not f_est or any(x in f_est for x in h["strats"]))
                and (not f_res or (h["res"] or "aguardando") in f_res)
@@ -2989,9 +3089,9 @@ with tab_hist:
                    "inconclusivo": "não conclusivo", "sem dados": "sem dados"}[v]
             tcls = {"acima": "good", "abaixo": "bad"}.get(v, "mid")
             _be_amostra = breakeven(_pay_amostra) * 100
-            taxa_txt = f'{taxa:.1f}%'
-            sub = (f'IC95 {lo*100:.0f}–{hi*100:.0f}% · {txt} '
-                   f'(breakeven {_be_amostra:.1f}%)')
+            taxa_txt = f'{pct(taxa, 1)}'
+            sub = (f'IC95 {lo*100:.0f}–{pct(hi*100, 0)} · {txt} '
+                   f'(breakeven {pct(_be_amostra, 1)})')
         else:
             tcls, taxa_txt, sub = "mid", "—", "nenhuma operação resolvida ainda"
 
@@ -3007,7 +3107,7 @@ with tab_hist:
             + stat("Acertos", g, f"de {len(fechados)} operações")
             + stat("Taxa do forward test", taxa_txt, sub, tcls)
             + '</div>', unsafe_allow_html=True)
-        st.caption(f"Breakeven {BE:.2f}% com payout {payout_lbl}.")
+        st.caption(f"Breakeven {pct(BE, 2)} com payout {payout_lbl}.")
 
         # ---- quanto falta para o veredito sair do "não conclusivo" ----
         if fechados and v == "inconclusivo":
@@ -3019,14 +3119,14 @@ with tab_hist:
                 st.markdown(
                     f'<div class="note"><b>Faltam cerca de {_falta} operações</b> para '
                     f'o intervalo de confiança sair inteiro {_lado} do breakeven, '
-                    f'mantida a taxa atual de {taxa:.1f}%. No seu ritmo '
+                    f'mantida a taxa atual de {pct(taxa, 1)}. No seu ritmo '
                     f'(~{_dia_med:.0f} por dia), isso é aproximadamente '
                     f'<b>{_dias:.0f} dias</b> de operação.</div>',
                     unsafe_allow_html=True)
             else:
                 st.markdown(
                     f'<div class="note"><b>Nenhum tamanho de amostra resolveria isso.</b> '
-                    f'Com {taxa:.1f}% contra um breakeven de {_be_amostra:.1f}%, a '
+                    f'Com {pct(taxa, 1)} contra um breakeven de {pct(_be_amostra, 1)}, a '
                     f'diferença é pequena demais: mesmo com 20 mil operações o intervalo '
                     f'continuaria cruzando a linha. Na prática significa que, com este '
                     f'payout, não há vantagem a ser encontrada — o caminho é negociar '
@@ -3051,8 +3151,8 @@ with tab_hist:
                     "as duas metades concordam, o que dá alguma confiança na estabilidade")
             st.markdown(
                 f'<div class="note"><b>Teste das duas metades:</b> '
-                f'primeira <b class="{_cls}">{_pa:.1f}%</b> ({len(_a)} ops) · '
-                f'segunda <b class="{_cls}">{_pb:.1f}%</b> ({len(_b)} ops) · '
+                f'primeira <b class="{_cls}">{pct(_pa, 1)}</b> ({len(_a)} ops) · '
+                f'segunda <b class="{_cls}">{pct(_pb, 1)}</b> ({len(_b)} ops) · '
                 f'diferença de {_dif:.1f} pontos — {_msg}.</div>',
                 unsafe_allow_html=True)
 
@@ -3130,14 +3230,14 @@ with tab_hist:
             st.markdown(
                 f'<div class="curva"><div class="c-head">'
                 f'<span class="k">Taxa acumulada ao longo das operações</span>'
-                f'<span class="lg"><i class="be"></i>breakeven {BE:.1f}%</span></div>'
+                f'<span class="lg"><i class="be"></i>breakeven {pct(BE, 1)}</span></div>'
                 f'<svg viewBox="0 0 100 {H}" preserveAspectRatio="none">'
                 f'<line x1="0" y1="{y_be:.2f}" x2="100" y2="{y_be:.2f}" '
                 f'stroke="var(--warn)" stroke-width=".4" stroke-dasharray="2 2" opacity=".8"/>'
                 f'<polyline points="{pts}" fill="none" stroke="{cor}" stroke-width=".9" '
                 f'vector-effect="non-scaling-stroke" stroke-linejoin="round"/></svg>'
                 f'<div class="c-foot"><span>1ª op</span>'
-                f'<span class="mono">{acum[-1]:.1f}% em {len(acum)} ops</span></div></div>',
+                f'<span class="mono">{pct(acum[-1], 1)} em {len(acum)} ops</span></div></div>',
                 unsafe_allow_html=True)
 
 
@@ -3158,8 +3258,8 @@ with tab_hist:
             cls, t = VTXT[verdict(w, len(f), payout)]
             return (f'<tr><td class="nm">{rot}</td><td class="n">{sub}</td>'
                     f'<td class="n mono">{len(f)}</td>'
-                    f'<td class="n mono">{w/len(f)*100:.1f}%</td>'
-                    f'<td class="n mono">{_lo*100:.0f}–{_hi*100:.0f}%</td>'
+                    f'<td class="n mono">{pct(w/len(f)*100, 1)}</td>'
+                    f'<td class="n mono">{_lo*100:.0f}–{pct(_hi*100, 0)}</td>'
                     f'<td><span class="verd {cls}">{t}</span></td></tr>')
 
         # ---- por estratégia (um sinal com 2 estratégias conta nas duas) ----
@@ -3278,7 +3378,7 @@ with tab_hist:
             if f_:
                 tx = w_ / len(f_) * 100
                 cls_ = "good" if tx >= BE else "bad"
-                sub = (f'<span class="{cls_} mono" style="font-weight:700">{tx:.1f}%</span>'
+                sub = (f'<span class="{cls_} mono" style="font-weight:700">{pct(tx, 1)}</span>'
                        f'<span class="n"> · {w_}/{len(f_)} resolvidos</span>')
             else:
                 sub = '<span class="n">nenhuma resolvida</span>'
@@ -3291,7 +3391,7 @@ with tab_hist:
                 arw = "▲" if h["dir"] == "COMPRA" else "▼"
                 chips_h = "".join(f'<span class="sc">{x}</span>' for x in h["strats"])
                 _lg = h.get("lag")
-                lag_txt = (f'{_lg:.1f}min' if isinstance(_lg, (int, float))
+                lag_txt = (f'{nbf(_lg, 1)}min' if isinstance(_lg, (int, float))
                            and math.isfinite(_lg) else "—")
                 # Prova da apuração: os dois preços que decidiram o resultado.
                 # Divergência com a corretora vira conferência de 10 segundos.
@@ -3400,7 +3500,7 @@ with tab_hist:
                                 sorted(_mots.items(), key=lambda kv: -kv[1]))
             _perdi = _mots.get("perdi a janela", 0)
             _obs = ("" if not _perdi else
-                    f' Perder a janela em {_perdi/_tot_m*100:.0f}% dos casos é um '
+                    f' Perder a janela em {pct(_perdi/_tot_m*100, 0)} dos casos é um '
                     f'problema de latência, não de estratégia — vale olhar a pastilha '
                     f'"sinal pronto em" na aba Sinais.')
             st.markdown(f'<div class="note"><b>Por que não executou:</b> {_txt_m}.'
@@ -3417,8 +3517,8 @@ with tab_hist:
                    "inconclusivo": "não conclusivo", "sem dados": "sem dados"}[_ve]
             st.markdown(
                 f'<div class="note"><b>Só o que você executou:</b> '
-                f'{_we}/{len(_exec)} = <b>{_pe*100:.1f}%</b> · IC95 '
-                f'{_loe*100:.0f}–{_hie*100:.0f}% · {_tv}. Esta é a medida da sua '
+                f'{_we}/{len(_exec)} = <b>{pct(_pe*100, 1)}</b> · IC95 '
+                f'{_loe*100:.0f}–{pct(_hie*100, 0)} · {_tv}. Esta é a medida da sua '
                 f'operação; a taxa geral acima inclui sinais que você não pegou.</div>',
                 unsafe_allow_html=True)
 
