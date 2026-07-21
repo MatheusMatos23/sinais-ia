@@ -1384,11 +1384,20 @@ with tab_cfg:
               <div id="ns" style="color:#6F7B93;font-size:.68rem;margin-top:7px"></div>
             </div>
             <script>
-            var el=document.getElementById('ns');
-            function est(){el.textContent = (window.Notification && Notification.permission==='granted')
-              ? 'Notificações permitidas.' : 'Ainda não permitidas neste navegador.';}
+            /* Pede pela janela pai: dentro do iframe o Chrome bloqueia o pedido
+               de permissão, e o clique parecia não fazer nada. */
+            var P = window.parent, N = P.Notification || window.Notification;
+            var el = document.getElementById('ns');
+            function est(){
+              if(!N){ el.textContent='Este navegador não suporta notificações.'; return; }
+              var p = N.permission;
+              el.textContent = p==='granted' ? 'Notificações permitidas.'
+                : p==='denied' ? 'Bloqueadas. Libere no cadeado da barra de endereço.'
+                : 'Ainda não permitidas — clique no botão acima.';
+            }
             document.getElementById('n').onclick=function(){
-              if(window.Notification) Notification.requestPermission().then(est);
+              if(!N){ est(); return; }
+              try{ N.requestPermission().then(function(){ est(); }); }catch(e){ est(); }
             };
             est();
             </script>""", height=88)
@@ -2110,8 +2119,9 @@ with tab_sig:
         function say(t){{try{{var u=new SpeechSynthesisUtterance(t);u.lang='pt-BR';u.rate=1.05;
           window.speechSynthesis.cancel();window.speechSynthesis.speak(u);}}catch(e){{}}}}
         function notificar(t){{try{{
-          if(window.Notification && Notification.permission==='granted')
-            new Notification('Kairo · entrada agora', {{body:t, tag:'kairo-entrada'}});
+          var N = window.parent.Notification || window.Notification;
+          if(N && N.permission === 'granted')
+            new N('Kairo · entrada agora', {{body:t, tag:'kairo-entrada'}});
         }}catch(e){{}}}}
         (function(){{if(!FALA)return;
           var per=TF*60,n=Date.now()/1000,pos=n%per,c=Math.floor(n/per);
