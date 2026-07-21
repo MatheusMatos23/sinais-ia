@@ -3067,8 +3067,7 @@ with tab_res:
                 linhas += (f'<tr><td class="nm">{k}</td>'
                            f'<td class="mono {sinal}" style="font-weight:700">'
                            f'{d["money"]:+.2f}</td>'
-                           f'<td class="n mono">{d["n"]}</td>'
-                           f'<td class="n mono">{pct(d["taxa"], 1)}</td>'
+                           f'<td class="n">{wl(d["w"], d["n"])}</td>'
                            f'<td class="n mono">{pct(d["pay"]*100, 0)}</td>'
                            f'<td><span class="verd v-{cls if cls != "good" else "good"}">'
                            f'{txt}</span></td></tr>')
@@ -3768,8 +3767,11 @@ with tab_hist:
             """Linha de tabela com n, taxa, IC95 e veredito para um recorte."""
             f = [h for h in sinais if h["res"] in ("ganhou", "perdeu")]
             if not f:
+                # 5 células, o mesmo do ramo normal. Quando "Ops" e "Acerto"
+                # viraram uma coluna só, este ramo ficou com uma a mais e
+                # desalinhava a tabela inteira sempre que um recorte vinha vazio.
                 return (f'<tr><td class="nm">{rot}</td><td class="n">{sub}</td>'
-                        f'<td class="n">0</td><td class="n">—</td><td class="n">—</td>'
+                        f'<td class="n">{wl(0, 0)}</td><td class="n">—</td>'
                         f'<td><span class="verd v-mid">sem dados</span></td></tr>')
             w = sum(1 for h in f if h["res"] == "ganhou")
             _p, _lo, _hi = wilson_ci(w, len(f))
