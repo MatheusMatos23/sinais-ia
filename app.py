@@ -1982,6 +1982,9 @@ def hist_df(h):
         "payout": r.get("payout", ""),
         "cortado_por": r.get("bloq") or "",
         "corpo_pct": r.get("q_corpo", ""), "atr_percentil": r.get("q_atrp", ""),
+        # prova do resultado — para conferir contra o feed da corretora
+        "apuracao_abertura": r.get("ap_open", ""), "apuracao_fech": r.get("ap_close", ""),
+        "apuracao_var": r.get("ap_var", ""), "apuracao_fonte": r.get("ap_src", ""),
     } for r in sorted(h, key=lambda x: x["ts"], reverse=True)])
 
 
@@ -2048,6 +2051,14 @@ def record_and_resolve(entries, data, minutes, na_janela):
             else:
                 venceu = (cl > op) == (h["dir"] == "COMPRA")
                 h["res"] = "ganhou" if venceu else "perdeu"
+            # Prova do resultado: exatamente os números que decidiram ganhou/perdeu,
+            # e de qual feed vieram. A opção binária liquida no feed DA CORRETORA,
+            # que não é este; quando der divergência, dá para comparar os dois
+            # preços na hora em vez de discutir no achismo.
+            h["ap_open"] = round(op, 6)
+            h["ap_close"] = round(cl, 6)
+            h["ap_var"] = round(cl - op, 6)
+            h["ap_src"] = st.session_state.get("fontes", {}).get(h["asset"], "?")
             changed = True
     if len(hist) > 3000:
         del hist[:len(hist) - 3000]
@@ -3271,7 +3282,7 @@ with tab_hist:
                        f'<span class="n"> · {w_}/{len(f_)} resolvidos</span>')
             else:
                 sub = '<span class="n">nenhuma resolvida</span>'
-            rows += (f'<tr class="daysep"><td colspan="7">'
+            rows += (f'<tr class="daysep"><td colspan="8">'   # 8 = nº de colunas
                      f'<span class="dlbl">{dia_lbl}</span>{sub}</td></tr>')
             for h in itens:
                 vc, vt = VERD.get(h["res"], ("v-mid", "aguardando"))
@@ -3282,15 +3293,27 @@ with tab_hist:
                 _lg = h.get("lag")
                 lag_txt = (f'{_lg:.1f}min' if isinstance(_lg, (int, float))
                            and math.isfinite(_lg) else "—")
+                # Prova da apuração: os dois preços que decidiram o resultado.
+                # Divergência com a corretora vira conferência de 10 segundos.
+                _ao, _ac = h.get("ap_open"), h.get("ap_close")
+                if isinstance(_ao, (int, float)) and isinstance(_ac, (int, float)):
+                    _dcl = "good" if _ac > _ao else ("bad" if _ac < _ao else "")
+                    ap_txt = (f'<span class="mono">{fmt_price(h["asset"], _ao)}'
+                              f' → <span class="{_dcl}">{fmt_price(h["asset"], _ac)}</span>'
+                              f'</span>')
+                else:
+                    ap_txt = '<span class="n">—</span>'
                 rows += (f'<tr><td class="n">{hm(h["ts"])}</td>'
                          f'<td class="nm">{h["asset"]}</td>'
                          f'<td class="n mono">{h.get("tf", "—")}m</td>'
                          f'<td class="{dcls}" style="font-weight:800">{arw} {h["dir"]}</td>'
                          f'<td>{chips_h}</td>'
+                         f'<td class="n">{ap_txt}</td>'
                          f'<td class="n mono">{lag_txt}</td><td>{r}</td></tr>')
         st.markdown(f'<div class="sect">Sinais registrados · {len(vis)} de {len(hist)}</div>', unsafe_allow_html=True)
         st.markdown(f'<table class="tbl"><tr><th>Hora</th><th>Ativo</th><th>TF</th>'
-                    f'<th>Direção</th><th>Estratégias</th><th>Atraso</th>'
+                    f'<th>Direção</th><th>Estratégias</th>'
+                    f'<th>Abertura → fecham.</th><th>Atraso</th>'
                     f'<th>Resultado</th></tr>{rows}</table>',
                     unsafe_allow_html=True)
         st.markdown('<div class="note"><b>Este é o teste que vale.</b> Aqui não há backtest nem '
