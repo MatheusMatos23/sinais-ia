@@ -15,6 +15,7 @@ import io
 import json
 import math
 import os
+import re                      # parser da grade de horários da corretora
 import socket
 import threading
 import time
@@ -143,6 +144,92 @@ def _hhmm(txt):
         return None
 
 
+# Dias da semana no padrão do Python: segunda=0 ... domingo=6.
+DIAS_SIG = {"seg": 0, "ter": 1, "qua": 2, "qui": 3, "sex": 4, "sab": 5, "sáb": 5,
+            "dom": 6}
+DIAS_NOME = ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"]
+
+
+def parse_grade(texto):
+    """
+    Texto -> {dia_da_semana: [[ini, fim], ...]}.
+
+    O cronograma da corretora MUDA por dia: a Bullex mostra EUR/USD em
+    00:00–15:30 e 22:00–23:59 de terça a quinta, mas na sexta só o período da
+    manhã, sábado fechado e domingo só a noite. Uma faixa única aplicada a todos
+    os dias liberaria sexta à noite e o sábado inteiro — exatamente as horas em
+    que não há como operar.
+
+    Sintaxe (grupos separados por ';', faixas por ','):
+        seg-qui 00:00-15:30, 22:00-23:59; sex 00:00-15:30; dom 22:00-23:59
+    Sem prefixo de dia, vale para a semana toda:
+        09:00-17:30
+    Dia ausente = fechado naquele dia.
+    """
+    grade = {}
+    if not texto:
+        return grade
+    for grupo in str(texto).split(";"):
+        grupo = grupo.strip()
+        if not grupo:
+            continue
+        dias, resto = None, grupo
+        # prefixo de dias? ex.: "seg-qui 00:00-15:30" ou "dom 22:00-23:59"
+        # inclui vogais acentuadas: "sáb" é a forma natural de escrever sábado,
+        # e sem isso a linha inteira era descartada em silêncio.
+        m = re.match(r"^([a-zà-úç]{3}(?:\s*-\s*[a-zà-úç]{3})?)\s+(.*)$", grupo, re.I)
+        if m:
+            spec, resto = m.group(1).lower().replace(" ", ""), m.group(2)
+            if "-" in spec:
+                a, b = spec.split("-", 1)
+                if a in DIAS_SIG and b in DIAS_SIG:
+                    ia, ib = DIAS_SIG[a], DIAS_SIG[b]
+                    dias = ([ia] if ia == ib else
+                            list(range(ia, ib + 1)) if ia < ib
+                            else list(range(ia, 7)) + list(range(0, ib + 1)))
+            elif spec in DIAS_SIG:
+                dias = [DIAS_SIG[spec]]
+        if dias is None:
+            dias = list(range(7))          # sem prefixo: semana inteira
+        faixas = []
+        for parte in resto.split(","):
+            parte = parte.strip()
+            if "-" not in parte:
+                continue
+            ini, fim = parte.split("-", 1)
+            if _hhmm(ini) is not None and _hhmm(fim) is not None:
+                faixas.append([ini.strip(), fim.strip()])
+        if faixas:
+            for dsem in dias:
+                grade.setdefault(dsem, []).extend(faixas)
+    return grade
+
+
+def fmt_grade(grade):
+    """{dia: faixas} -> texto compacto, agrupando dias com o mesmo horário."""
+    if not grade:
+        return ""
+    porh = {}
+    for dsem in range(7):
+        chave = ",".join(f"{a}-{b}" for a, b in grade.get(dsem, []))
+        if chave:
+            porh.setdefault(chave, []).append(dsem)
+    partes = []
+    for chave, dias in porh.items():
+        dias.sort()
+        # dias consecutivos viram intervalo (seg-qui), soltos ficam separados
+        blocos, ini = [], dias[0]
+        for i in range(1, len(dias) + 1):
+            if i == len(dias) or dias[i] != dias[i - 1] + 1:
+                fim = dias[i - 1]
+                blocos.append(DIAS_NOME[ini] if ini == fim
+                              else f"{DIAS_NOME[ini]}-{DIAS_NOME[fim]}")
+                if i < len(dias):
+                    ini = dias[i]
+        partes.append(f"{'/'.join(blocos)} {chave}")
+    return "; ".join(partes)
+
+
 def aberto_na_corretora(nome, agora_utc, grade):
     """
     O ativo está negociável na corretora AGORA?
@@ -153,11 +240,21 @@ def aberto_na_corretora(nome, agora_utc, grade):
     Sem grade cadastrada para o ativo, devolve True e o app segue no critério
     de sessão de mercado que já existia — nunca fecha o que não sabe.
     """
-    faixas = (grade or {}).get(nome)
-    if not faixas:
+    bruto = (grade or {}).get(nome)
+    if not bruto:
         return True
     ag = br(agora_utc)
     agora_min = ag.hour * 60 + ag.minute
+    # Formato novo: {dia_da_semana: faixas}. Formato antigo (lista de faixas)
+    # continua aceito e vale para todos os dias.
+    if isinstance(bruto, dict):
+        # o dia pode ter vindo do JSON como texto ("4") em vez de int
+        faixas = bruto.get(ag.weekday(), bruto.get(str(ag.weekday())))
+        if not faixas:
+            # dia declarado na grade porém sem faixa = fechado neste dia
+            return False if any(bruto.values()) else True
+    else:
+        faixas = bruto
     validas = 0
     for par in faixas:
         if not isinstance(par, (list, tuple)) or len(par) != 2:
@@ -1935,39 +2032,54 @@ with tab_cfg:
                                help="Ativo sem horário cadastrado continua seguindo o "
                                     "critério de sessão de mercado. O app nunca fecha "
                                     "o que você não informou.")
-    st.caption("Uma ou mais faixas por linha, separadas por vírgula, em horário de "
-               "Brasília: `09:00-17:30` ou `03:00-11:00, 14:00-21:00`. "
-               "Faixa que vira o dia funciona: `21:00-06:00`. Em branco = sem restrição.")
+    st.caption(
+        "Copie de **Informações → Condições de Negociação** no ativo, na própria "
+        "corretora (o cronograma dela já vem em UTC-3, o mesmo de Brasília). "
+        "Grupos de dias separados por `;`, faixas por `,`:\n\n"
+        "`seg-qui 00:00-15:30, 22:00-23:59; sex 00:00-15:30; dom 22:00-23:59`\n\n"
+        "Sem prefixo de dia, vale a semana toda: `09:00-17:30`. "
+        "Dia que não aparecer fica **fechado**. Em branco = sem restrição.")
     _hor_salvo = CFG.get("horarios_ativo") or {}
     _hor_novo = {}
     hc1, hc2 = st.columns(2)
     for i, a in enumerate(ASSETS):
-        _atual = _hor_salvo.get(a["name"]) or []
-        _txt_ini = ", ".join(f"{p[0]}-{p[1]}" for p in _atual
-                             if isinstance(p, (list, tuple)) and len(p) == 2)
+        _guard = _hor_salvo.get(a["name"])
+        if isinstance(_guard, dict):
+            _txt_ini = fmt_grade({int(k): v for k, v in _guard.items()})
+        elif isinstance(_guard, list) and _guard:            # formato antigo
+            _txt_ini = ", ".join(f"{p[0]}-{p[1]}" for p in _guard
+                                 if isinstance(p, (list, tuple)) and len(p) == 2)
+        else:
+            _txt_ini = ""
         with (hc1 if i % 2 == 0 else hc2):
-            _v = st.text_input(a["name"], value=_txt_ini, key=f"hor_{a['name']}",
-                               placeholder="24h" if a["type"] == "crypto" else "09:00-17:30",
-                               disabled=not usar_hor_ativo)
-        _faixas = []
-        for parte in str(_v).split(","):
-            parte = parte.strip()
-            if not parte:
-                continue
-            if "-" in parte:
-                ini, fim = parte.split("-", 1)
-                if _hhmm(ini) is not None and _hhmm(fim) is not None:
-                    _faixas.append([ini.strip(), fim.strip()])
-        if _faixas:
-            _hor_novo[a["name"]] = _faixas
-    # avisa sobre texto digitado que não virou faixa, em vez de ignorar calado
+            _v = st.text_input(
+                a["name"], value=_txt_ini, key=f"hor_{a['name']}",
+                placeholder=("24h — deixe em branco" if a["type"] == "crypto"
+                             else "seg-qui 00:00-15:30, 22:00-23:59; sex 00:00-15:30"),
+                disabled=not usar_hor_ativo)
+        _g = parse_grade(_v)
+        if _g:
+            _hor_novo[a["name"]] = {str(k): v for k, v in _g.items()}
+    # avisa sobre texto digitado que não virou grade, em vez de ignorar calado
     _invalidos = [a["name"] for a in ASSETS
                   if st.session_state.get(f"hor_{a['name']}", "").strip()
                   and a["name"] not in _hor_novo]
     if _invalidos:
         st.warning(f"Horário não reconhecido em: {', '.join(_invalidos)}. "
-                   f"Use o formato `HH:MM-HH:MM`. Esses ativos ficaram **sem** "
-                   f"restrição de horário.")
+                   f"Esses ativos ficaram **sem** restrição — o app não bloqueia "
+                   f"o que não conseguiu entender.")
+    if usar_hor_ativo and _hor_novo:
+        _linhas_g = ""
+        for nome, g in _hor_novo.items():
+            _ab = aberto_na_corretora(nome, datetime.now(timezone.utc), _hor_novo)
+            _linhas_g += (f'<tr><td class="nm">{nome}</td>'
+                          f'<td class="n">{fmt_grade({int(k): v for k, v in g.items()})}</td>'
+                          f'<td><span class="verd {"v-good" if _ab else "v-mid"}">'
+                          f'{"aberto agora" if _ab else "fechado agora"}</span></td></tr>')
+        st.markdown(f'<table class="tbl"><tr><th>Ativo</th><th>Grade lida</th>'
+                    f'<th>Agora</th></tr>{_linhas_g}</table>', unsafe_allow_html=True)
+        st.caption("Confira acima como o app entendeu cada grade — se a leitura não "
+                   "bater com a tela da corretora, o texto está errado.")
 
     st.markdown("**Payout por ativo** — o breakeven muda com o payout, então vale "
                 "conferir o de cada par na sua corretora. Em branco = usa o padrão.")
