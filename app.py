@@ -1045,6 +1045,21 @@ body.foco [data-testid="stTabs"] [role="tabpanel"]{min-height:0}
 .mono,.stat .v,.chip .cv,.tbl .n,.empty .e-side .v,
 [data-testid="stMetricValue"]{font-variant-numeric:tabular-nums}
 
+/* VÍRGULA DECIMAL EM FONTE MONO.
+   Com a mudança para o padrão brasileiro, "66.7%" virou "66,7%" — e em
+   monoespaçada TODO glifo ocupa uma célula inteira, inclusive a vírgula.
+   O ponto, sendo baixo e centrado, passava despercebido; a vírgula abre um vão
+   e o número sai lido como "66 , 7%".
+   Inter tem algarismos tabulares de verdade: dígito de largura fixa (que é o
+   que interessa para o número não dançar a cada rerun) e pontuação com largura
+   própria. Então os números com casa decimal saem de mono e vão para Inter.
+   O relógio e os contadores de tempo CONTINUAM em mono: lá não há vírgula e o
+   alinhamento dos dois-pontos é justamente a vantagem. */
+.stat .v,.wr,.sumbar .big,.sumbar .s-side i,.card .px,.tbl .mono,
+[data-testid="stMetricValue"]{
+  font-family:'Inter',-apple-system,sans-serif;
+  font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+
 /* ---------- PROFUNDIDADE ----------
    Antes cabeçalho, barra de controles, cartões e tabelas dividiam a MESMA
    superfície e a MESMA borda — tudo no mesmo plano, sem hierarquia. Três
