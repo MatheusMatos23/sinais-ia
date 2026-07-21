@@ -126,6 +126,7 @@ GRADE_BULLEX_TXT = {
     # estes fecham no fim de semana inteiro e têm janela única
     "AUD/USD": "seg-sex 00:00-14:00",
     "USD/CAD": "seg-sex 03:00-15:00",
+    "EUR/GBP": "seg-sex 03:00-15:00",   # conferido na Bullex 21/07/2026
     # cripto negocia 24/7 na corretora: sem grade = sem restrição
 }
 SESSIONS = {"Sydney": (21, 6), "Tóquio": (23, 8), "Londres": (7, 16), "Nova York": (12, 21)}
