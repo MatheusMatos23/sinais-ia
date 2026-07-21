@@ -2142,7 +2142,19 @@ with tab_hist:
         # Eles definem `vis`, e TODO o resto da aba — cartões, curva, tabelas —
         # é calculado sobre `vis`. Antes só a tabela final respeitava o filtro,
         # então os números do topo diziam uma coisa e a lista embaixo outra.
-        f1, f2, f3 = st.columns([2, 1.4, 1])
+        TIPO_ATIVO = {a["name"]: a["type"] for a in ASSETS}
+
+        def payout_do(itens):
+            """
+            BUG CORRIGIDO: o payout por ativo era gravado em cada sinal mas as
+            estatísticas usavam sempre o payout global. Com 80% num par e 90%
+            noutro, o breakeven do recorte não é nenhum dos dois — e o veredito
+            saía comparando a taxa contra a linha errada.
+            """
+            ps = [h.get("payout") for h in itens
+                  if isinstance(h.get("payout"), (int, float))]
+            return (sum(ps) / len(ps)) if ps else PAYOUT
+        f1, f2, f3, f4 = st.columns([2, 1.4, 1, 1])
         with f1:
             todas_est = sorted({s for h in hist for s in h["strats"]})
             f_est = st.multiselect("Estratégia", todas_est, default=[],
@@ -2157,10 +2169,15 @@ with tab_hist:
             f_tf = st.multiselect("Timeframe", tfs, default=[],
                                   format_func=lambda v: f"{v} min",
                                   placeholder="Todos")
+        with f4:
+            f_mkt = st.multiselect("Mercado", ["fx", "crypto"], default=[],
+                                   format_func=lambda v: "Forex" if v == "fx" else "Cripto",
+                                   placeholder="Tudo")
         vis = [h for h in hist
                if (not f_est or any(x in f_est for x in h["strats"]))
                and (not f_res or (h["res"] or "aguardando") in f_res)
-               and (not f_tf or h.get("tf") in f_tf)]
+               and (not f_tf or h.get("tf") in f_tf)
+               and (not f_mkt or TIPO_ATIVO.get(h["asset"]) in f_mkt)]
         filtrado = len(vis) != len(hist)
         if filtrado:
             st.caption(f"Filtro ativo: {len(vis)} de {len(hist)} sinais. "
@@ -2179,12 +2196,15 @@ with tab_hist:
         # tem outra tipografia e destoa do resto da interface.
         if fechados:
             p, lo, hi = wilson_ci(g, len(fechados))
-            v = verdict(g, len(fechados), PAYOUT)
+            _pay_amostra = payout_do(fechados)
+            v = verdict(g, len(fechados), _pay_amostra)
             txt = {"acima": "acima do breakeven", "abaixo": "abaixo do breakeven",
                    "inconclusivo": "não conclusivo", "sem dados": "sem dados"}[v]
             tcls = {"acima": "good", "abaixo": "bad"}.get(v, "mid")
+            _be_amostra = breakeven(_pay_amostra) * 100
             taxa_txt = f'{taxa:.1f}%'
-            sub = f'IC95 {lo*100:.0f}–{hi*100:.0f}% · {txt}'
+            sub = (f'IC95 {lo*100:.0f}–{hi*100:.0f}% · {txt} '
+                   f'(breakeven {_be_amostra:.1f}%)')
         else:
             tcls, taxa_txt, sub = "mid", "—", "nenhuma operação resolvida ainda"
 
@@ -2201,6 +2221,26 @@ with tab_hist:
             + stat("Taxa do forward test", taxa_txt, sub, tcls)
             + '</div>', unsafe_allow_html=True)
         st.caption(f"Breakeven {BE:.2f}% com payout {payout_lbl}.")
+
+        # ---- pendentes que o app não consegue apurar agora ----
+        # A apuração lê a vela de entrada nos dados carregados. Se o sinal é de
+        # outro timeframe ou de um ativo fora da varredura atual, esses dados não
+        # estão em memória e ele fica "aguardando" para sempre — sem nenhum aviso.
+        _varridos = {a["name"] for a in scan_list}
+        _presos = [h for h in hist if h["res"] is None
+                   and (h.get("tf") != minutes or h["asset"] not in _varridos)]
+        if _presos:
+            _tfs_p = sorted({h.get("tf") for h in _presos if h.get("tf")})
+            _ats_p = sorted({h["asset"] for h in _presos})
+            st.markdown(
+                f'<div class="win alert"><span class="pt"></span><div class="msg">'
+                f'<b>{len(_presos)} sinal(is) sem apuração.</b> São de timeframe '
+                f'({", ".join(f"{t} min" for t in _tfs_p)}) ou de ativos '
+                f'({", ".join(_ats_p[:4])}{"…" if len(_ats_p) > 4 else ""}) que não '
+                f'estão na varredura atual — e o app só consegue apurar o resultado '
+                f'com os dados carregados. Para resolvê-los, volte ao timeframe e ao '
+                f'mercado correspondentes por alguns instantes.</div></div>',
+                unsafe_allow_html=True)
 
         # ---- aviso de sequência ruim ----
         # Não prova nada sobre a estratégia: sequências ruins acontecem mesmo com
@@ -2302,7 +2342,7 @@ with tab_hist:
                 return (w / len(f), len(f))   # desempate pelo tamanho da amostra
 
             linhas = "".join(
-                linha_ic(s, "estratégia", v, PAYOUT)
+                linha_ic(s, "estratégia", v, payout_do(v))
                 for s, v in sorted(por_est.items(), key=lambda kv: _taxa(kv[1]),
                                    reverse=True))
             st.markdown('<div class="sect">Forward test por estratégia</div>',
@@ -2318,8 +2358,10 @@ with tab_hist:
             corte = max(1.0, float(minutes))
             fresco = [h for h in com_lag if h["lag"] <= corte]
             velho = [h for h in com_lag if h["lag"] > corte]
-            linhas = (linha_ic(f"Atraso ≤ {corte:.0f} min", "dado fresco", fresco, PAYOUT)
-                      + linha_ic(f"Atraso > {corte:.0f} min", "dado atrasado", velho, PAYOUT))
+            linhas = (linha_ic(f"Atraso ≤ {corte:.0f} min", "dado fresco", fresco,
+                               payout_do(fresco))
+                      + linha_ic(f"Atraso > {corte:.0f} min", "dado atrasado", velho,
+                                 payout_do(velho)))
             st.markdown('<div class="sect">Efeito do atraso dos dados</div>',
                         unsafe_allow_html=True)
             st.markdown(f'<table class="tbl"><tr><th>Recorte</th><th>Tipo</th><th>Ops</th>'
@@ -2439,7 +2481,8 @@ with tab_hist:
         if _exec:
             _we = sum(1 for h in _exec if h["res"] == "ganhou")
             _pe, _loe, _hie = wilson_ci(_we, len(_exec))
-            _ve = verdict(_we, len(_exec), PAYOUT)
+            _pe_pay = payout_do(_exec)
+            _ve = verdict(_we, len(_exec), _pe_pay)
             _tv = {"acima": "acima do breakeven", "abaixo": "abaixo do breakeven",
                    "inconclusivo": "não conclusivo", "sem dados": "sem dados"}[_ve]
             st.markdown(
