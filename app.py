@@ -93,7 +93,13 @@ ASSETS = [
     {"name": "AUD/USD", "yf": "AUDUSD=X", "cur": ["AUD", "USD"], "type": "fx", "voz": "Dólar Australiano"},
     {"name": "USD/CAD", "yf": "USDCAD=X", "cur": ["USD", "CAD"], "type": "fx", "voz": "Dólar Canadense"},
     {"name": "USD/CHF", "yf": "USDCHF=X", "cur": ["USD", "CHF"], "type": "fx", "voz": "Dólar Franco"},
-    {"name": "NZD/USD", "yf": "NZDUSD=X", "cur": ["NZD", "USD"], "type": "fx", "voz": "Dólar Neozelandês"},
+    # NZD/USD REMOVIDO em 21/07/2026. A Bullex paga 30% de payout nele, o que
+    # põe o breakeven em 76,92%. A melhor taxa já medida neste sistema, em 62 mil
+    # operações de backtest, foi ~54% — a 54% de acerto o par rende -29,8% por
+    # operação. Não é um ativo ruim, é aritmeticamente injogável: nenhuma
+    # estratégia, filtro ou horário resolve 23 pontos de diferença.
+    # Se a corretora melhorar o payout dele, basta descomentar.
+    # {"name": "NZD/USD", "yf": "NZDUSD=X", "cur": ["NZD", "USD"], "type": "fx", "voz": "Dólar Neozelandês"},
     {"name": "EUR/JPY", "yf": "EURJPY=X", "cur": ["EUR", "JPY"], "type": "fx", "voz": "Euro Iene"},
     {"name": "BTC/USD", "yf": "BTC-USD", "cur": [], "type": "crypto", "voz": "Bitcoin"},
     {"name": "ETH/USD", "yf": "ETH-USD", "cur": [], "type": "crypto", "voz": "Ethereum"},
@@ -108,7 +114,6 @@ GRADE_BULLEX_TXT = {
     "EUR/USD": "seg-qui 00:00-15:30, 22:00-23:59; sex 00:00-15:30; dom 22:00-23:59",
     "GBP/USD": "seg-qui 00:00-15:30, 22:00-23:59; sex 00:00-15:30; dom 22:00-23:59",
     "USD/JPY": "seg-qui 00:00-15:30, 22:00-23:59; sex 00:00-15:30; dom 22:00-23:59",
-    "NZD/USD": "seg-qui 00:00-15:30, 22:00-23:59; sex 00:00-15:30; dom 22:00-23:59",
     "EUR/JPY": "seg-qui 00:00-15:30, 22:00-23:59; sex 00:00-15:30; dom 22:00-23:59",
     # estes fecham no fim de semana inteiro e têm janela única
     "AUD/USD": "seg-sex 00:00-14:00",
@@ -806,7 +811,11 @@ st.markdown("""
 .stApp{background:var(--bg);color:var(--ink);
   font-family:'Inter',-apple-system,sans-serif;-webkit-font-smoothing:antialiased;}
 #MainMenu,footer,header{visibility:hidden}
-.block-container{padding-top:1.5rem;padding-bottom:4rem;max-width:1180px}
+/* DEFINIÇÃO ÚNICA. Havia um segundo .block-container mais abaixo com
+   padding-top:1.1rem que vencia por ordem — o 1.5rem daqui era letra
+   morta. Duas declarações do mesmo seletor já causaram a sobreposição
+   das abas antes; o valor efetivo agora está num lugar só. */
+.block-container{padding-top:1.1rem;padding-bottom:4rem;max-width:1180px}
 .mono{font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums}
 hr{border-color:var(--line)}
 
@@ -1223,8 +1232,7 @@ div[data-testid="stMetricValue"]{font-family:'IBM Plex Mono',monospace;font-size
 /* Expander com a mesma pele dos cartões. */
 div[data-testid="stExpander"] details{background:var(--surf);border:1px solid var(--line)!important;
   border-radius:var(--r2)!important}
-div[data-testid="stExpander"] summary{font-size:.82rem;font-weight:600;color:var(--ink2)}
-div[data-testid="stExpander"] summary:hover{color:var(--ink)}
+/* summary do expander: definido uma vez só, lá em cima */
 
 /* ---------- FIM DO PISCA-PISCA ----------
    Medido no DOM: 62 contêineres carregam `data-stale` e `transition: all`.
@@ -1483,7 +1491,6 @@ body.foco [data-testid="stTabs"] [role="tabpanel"]{min-height:0}
    controles, o expander e o contador são um grupo só. */
 div[data-testid="stExpander"]{margin:2px 0 var(--gap-curto)}
 [data-testid="stTabs"]{margin-top:10px}
-.block-container{padding-top:1.1rem}
 /* Legendas do Streamlit (st.caption) apareciam ora coladas, ora com 20px de
    distância do bloco acima. Passam a usar o mesmo respiro curto de todo o app. */
 [data-testid="stCaptionContainer"]{margin-top:var(--gap-curto)!important;
@@ -1610,6 +1617,13 @@ CFG_PADRAO = {
     "payout": 80.0, "intervalo": 15, "so_confluencia": False,
     "fora_sessao": False, "audio": False, "sistema": True,
     "usar_janela": False, "janela": [9, 17],
+    # BUG CORRIGIDO. Estes quatro eram GRAVADOS por cfg_save mas não constavam
+    # aqui — e cfg_load filtra por `if k in CFG_PADRAO`, então descartava todos
+    # na leitura. O valor por entrada voltava para 10 a cada nova sessão mesmo
+    # com o Gist funcionando: o dado estava salvo, só não era lido de volta.
+    # Eu tinha atribuído isso ao disco efêmero; era só metade da explicação.
+    # Regra: toda chave salva em cfg_save PRECISA existir aqui.
+    "stake": 10.0, "limite_on": False, "limite": 50.0, "notif": False,
     # ---- filtros de qualidade de entrada (cada um mede o próprio efeito) ----
     "f_corpo_on": False, "f_corpo_min": 35,        # corpo mínimo em % do range
     "f_atr_on": False, "f_atr_lo": 20, "f_atr_hi": 90,   # percentis de ATR aceitos
@@ -3022,6 +3036,11 @@ with tab_sig:
                        f"Para esticar: use 5 ou 15 min, ou reduza os ativos varridos.")
     if bloqueados:
         cs.append(chip("Bloqueados", f"{len(bloqueados)}", alerta=True))
+    # Ativo fechado na corretora sumia da varredura em silêncio: o contador
+    # caía de 9 para 5 e não havia como saber se era grade, sessão ou defeito.
+    if fechados_corretora:
+        cs.append(chip("Fechados na corretora",
+                       ", ".join(sorted(fechados_corretora))[:60]))
     err = st.session_state.get("td_erro")
     if err:
         cs.append(chip("Twelve Data", "indisponível", alerta=True))
