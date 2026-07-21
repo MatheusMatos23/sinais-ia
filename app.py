@@ -1178,6 +1178,17 @@ body.foco [data-testid="stTabs"] [role="tabpanel"]{min-height:0}
   box-shadow:0 1px 0 rgba(255,255,255,.045) inset, 0 18px 30px -26px rgba(0,0,0,.95)}
 .hero{box-shadow:0 20px 34px -28px rgba(0,0,0,.95)}
 
+/* ---------- BASE DO CÁLCULO (aba Resultado) ----------
+   Os três contadores ficam sempre visíveis, ao lado do seletor. A diferença
+   entre "executadas" e "resolvidas" é a informação mais importante da aba: é
+   ela que diz o quanto do número é a sua operação e o quanto é hipótese. */
+.basebox{display:flex;flex-wrap:wrap;gap:10px}
+.basebox span{display:flex;flex-direction:column;gap:2px;flex:1;min-width:120px;
+  background:var(--surf);border:1px solid var(--line);border-radius:var(--r);
+  padding:10px 14px;font-size:.62rem;color:var(--mut);line-height:1.35}
+.basebox i{font-style:normal;font-size:1.15rem;font-weight:700;color:var(--ink);
+  font-variant-numeric:tabular-nums}
+
 /* ---------- RADAR ----------
    Linguagem visual PROPOSITALMENTE diferente da das entradas: borda tracejada
    (nada no app usa tracejado), âmbar em vez do verde/vermelho de COMPRA/VENDA,
@@ -1481,6 +1492,18 @@ def pnl_de(h):
 
 
 def pnl_do_dia(hist_, dia_br):
+    """
+    Prejuízo do dia para o freio de perda. Conta TUDO que foi resolvido no dia,
+    marcado ou não, e a escolha é deliberada.
+
+    O padrão `exec=True` aqui é o mesmo que estava errado na aba Resultado, mas
+    pelo motivo oposto: lá ele inflava o extrato com operações que você não fez;
+    aqui ele torna o freio conservador. Se contasse só o marcado, bastaria você
+    não ter marcado ainda — e você marca depois, não durante — para o freio
+    nunca disparar justamente no dia ruim em que ele existe para agir.
+    Errar para o lado de parar cedo demais custa uma operação; errar para o lado
+    de não parar custa o limite que você mesmo definiu.
+    """
     return sum(pnl_de(h) for h in hist_
                if br(h["ts"]).date() == dia_br and h.get("exec", True))
 
@@ -2770,14 +2793,56 @@ with tab_sig:
 
 # ============================== ABA RESULTADO ==============================
 with tab_res:
-    _res_base = [h for h in hist if h.get("exec", True)
-                 and h["res"] in ("ganhou", "perdeu", "empate") and h.get("stake")]
+    # BUG CORRIGIDO AQUI, e era grave.
+    # Esta aba filtrava por `h.get("exec", True)` — padrão TRUE — enquanto a aba
+    # Histórico monta o checkbox com `h.get("exec", False)` — padrão FALSE. As
+    # duas discordavam sobre a MESMA operação: no Histórico o sinal aparecia
+    # desmarcado ("não executei") e no Resultado ele entrava no dinheiro como se
+    # tivesse sido operado. Na prática a aba somava lucro e prejuízo de operações
+    # que nunca saíram do papel, e bastava nunca tocar no checkbox para o valor
+    # ficar inflado. Era esse o cálculo estranho.
+    # Agora não há padrão implícito: as duas bases são explícitas e você escolhe.
+    _resolvido = ("ganhou", "perdeu", "empate")
+    _base_todos = [h for h in hist if h["res"] in _resolvido and h.get("stake")]
+    _base_exec = [h for h in _base_todos if h.get("exec")]
+
+    st.markdown('<div class="sect">Base do cálculo</div>', unsafe_allow_html=True)
+    _b1, _b2 = st.columns([1.6, 2.4], vertical_alignment="center")
+    with _b1:
+        _modo = st.radio(
+            "Base", ["Só o que executei", "Todos os sinais"],
+            index=0, horizontal=False, label_visibility="collapsed",
+            help="«Executei» é o seu dinheiro de verdade. «Todos os sinais» é o "
+                 "desempenho do app supondo que você tivesse operado tudo — útil "
+                 "para avaliar o sistema, não para conferir o extrato.")
+    _so_exec = _modo == "Só o que executei"
+    _res_base = _base_exec if _so_exec else _base_todos
+    with _b2:
+        _nao_marcadas = len(_base_todos) - len(_base_exec)
+        st.markdown(
+            f'<div class="basebox">'
+            f'<span><i class="mono">{len(_base_exec)}</i>marcadas como executadas</span>'
+            f'<span><i class="mono">{len(_base_todos)}</i>sinais resolvidos com valor</span>'
+            f'<span><i class="mono">{_nao_marcadas}</i>não marcadas</span></div>',
+            unsafe_allow_html=True)
+    if _so_exec and _nao_marcadas:
+        st.caption(f"{_nao_marcadas} operação(ões) resolvida(s) ainda não foram marcadas "
+                   f"em Histórico → «O que você executou de fato». Enquanto não forem, "
+                   f"ficam fora deste número — o que é o comportamento correto, mas "
+                   f"significa que o valor abaixo pode estar incompleto.")
+    if not _so_exec:
+        st.markdown(
+            '<div class="win alert"><span class="pt"></span><div class="msg">'
+            '<b>Este não é o seu extrato.</b> Você está vendo o resultado como se '
+            'tivesse operado todos os sinais, inclusive os que não operou. Serve para '
+            'julgar o sistema; não serve para conferir dinheiro.</div></div>',
+            unsafe_allow_html=True)
 
     # Sinais gravados antes de existir "valor por entrada" — ou com valor zerado —
     # não entram no cálculo financeiro. Antes sumiam sem explicação nenhuma.
-    _sem_valor = [h for h in hist if h.get("exec", True)
-                  and h["res"] in ("ganhou", "perdeu", "empate")
-                  and not h.get("stake")]
+    _sem_valor = [h for h in hist
+                  if (h.get("exec") if _so_exec else True)
+                  and h["res"] in _resolvido and not h.get("stake")]
     if _sem_valor:
         st.markdown(
             f'<div class="win alert"><span class="pt"></span><div class="msg">'
@@ -2802,9 +2867,13 @@ with tab_res:
 
     if not _res_base:
         st.markdown('<div class="sect">Resultado financeiro</div>', unsafe_allow_html=True)
-        st.caption("Ainda não há operações com valor registrado. Defina o "
-                   "*Valor por entrada* em Ajustes e marque em Histórico o que você "
-                   "executou de fato — o resultado é calculado só sobre isso.")
+        st.caption(
+            ("Nenhuma operação marcada como executada ainda. Vá em Histórico → «O que "
+             "você executou de fato» e marque o que você operou de verdade — é sobre "
+             "isso que este número é calculado."
+             if _so_exec else
+             "Ainda não há sinais resolvidos com valor registrado. Defina o *Valor por "
+             "entrada* em Ajustes."))
     else:
         def _stats(itens, payout_sim=None):
             """Dinheiro E veredito do mesmo recorte, sempre juntos.
@@ -2985,15 +3054,23 @@ with tab_res:
                 else:
                     break
             _hoje_pnl = sum(pnl_de(h) for h in _dia)
-            _rest = (abs(lim_val) + _hoje_pnl) if lim_on else None
+            # O "faltam X para o limite" tem que usar a MESMA conta do freio, senão
+            # o texto promete uma folga que o freio não reconhece.
+            _pnl_freio = pnl_do_dia(hist, _hoje)
+            _rest = (abs(lim_val) + _pnl_freio) if lim_on else None
             _extra = (f' · faltam <b>{_rest:.2f}</b> para o limite diário'
                       if _rest is not None and _rest > 0 else
                       (' · <b>limite diário atingido</b>' if _rest is not None else ''))
+            _obs_freio = ('' if not lim_on or abs(_pnl_freio - _hoje_pnl) < 0.005 else
+                          f'<br><span class="n">O freio diário conta todas as operações '
+                          f'resolvidas hoje ({_pnl_freio:+.2f}), marcadas ou não, para '
+                          f'não deixar de agir só porque você ainda não marcou.</span>')
             st.markdown(
                 f'<div class="note">Sequência atual: <b>{_seq} '
                 f'{"vitória" if _tipo == "ganhou" else "perda"}'
                 f'{"s" if _seq > 1 else ""} seguida{"s" if _seq > 1 else ""}</b>. '
-                f'Resultado de hoje: <b>{_hoje_pnl:+.2f}</b>{_extra}.</div>',
+                f'Resultado de hoje: <b>{_hoje_pnl:+.2f}</b>{_extra}.'
+                f'{_obs_freio}</div>',
                 unsafe_allow_html=True)
 
 
