@@ -1659,7 +1659,25 @@ for a in scan_list:
     df = data.get(a["name"])
     if df is None or len(df) < 60:
         continue
-    d = add_indicators(df.iloc[:-1])           # descarta a vela em formação
+    # BUG CORRIGIDO. Antes era `df.iloc[:-1]`, com o comentário "descarta a vela
+    # em formação". Isso valia quando a fonte era o yfinance, que devolve a vela
+    # parcial em andamento. A Twelve Data — hoje a fonte primária do forex — NÃO
+    # devolve: a última linha dela já é a vela FECHADA. O resultado é que o corte
+    # cego jogava fora justamente a vela mais recente e a estratégia decidia sobre
+    # a anterior, uma vela inteira atrasada. Para as estratégias de fade/reversão
+    # (G, I, J, K), que dependem da vela imediatamente anterior ter sido extrema,
+    # isso é fatal: elas liam o extremo de 10 minutos atrás.
+    # O sintoma media 5,5 min de atraso a 32s da virada — ou seja, um timeframe
+    # inteiro. E as duas metades do código se contradiziam: data_diag tratava
+    # essa mesma vela como "a última que já deveria ter fechado" (correto) e o
+    # scanner a tratava como "em formação" (errado).
+    # Agora o corte é por TIMESTAMP, não por posição: fica tudo que fechou antes
+    # da vela atual, funcione a fonte como funcionar.
+    _abre_atual = pd.Timestamp(candle_key(minutes) * minutes * 60, unit="s")
+    _fechadas = df[df.index < _abre_atual]
+    if len(_fechadas) < 60:
+        continue
+    d = add_indicators(_fechadas)
     # Métricas de qualidade da vela de sinal. Medidas SEMPRE, mesmo com os
     # filtros desligados: elas são gravadas no histórico e é o que permite,
     # depois, perguntar "meus doji acertavam menos?" sem ter cortado nada antes.
