@@ -193,11 +193,17 @@ def horas_operaveis(grade, nomes):
     horário com base nele descreveria outra coisa.
     """
     horas = set()
+    com_grade = 0
     for nome in nomes:
         bruto = (grade or {}).get(nome)
         if not bruto:
-            horas |= set(range(24))       # sem grade = sem restrição conhecida
+            # IGNORA ativo sem grade em vez de deixá-lo "abrir as 24h". Antes,
+            # um único ativo sem grade — cripto, ou um forex ainda não cadastrado
+            # — liberava todas as horas e o filtro inteiro morria: a hora 17h
+            # aparecia como operável mesmo com a Bullex fechada. Agora ele só
+            # não contribui; quem decide são os ativos que têm grade.
             continue
+        com_grade += 1
         for dsem in range(5):             # segunda a sexta
             faixas = (bruto.get(dsem, bruto.get(str(dsem)))
                       if isinstance(bruto, dict) else bruto) or []
@@ -212,7 +218,8 @@ def horas_operaveis(grade, nomes):
                     horas |= set(range(h_i, h_f + 1))
                 else:                      # faixa que atravessa a meia-noite
                     horas |= set(range(h_i, 24)) | set(range(0, h_f + 1))
-    return horas
+    # nenhum ativo tinha grade: não há o que restringir, libera tudo
+    return horas if com_grade else set(range(24))
 
 
 def parse_grade(texto):
@@ -4068,7 +4075,13 @@ with tab_perf:
             # Horas em que a corretora abre ALGUM ativo. Fora delas o backtest
             # até tem dado, mas recomendar essas horas seria conselho impossível
             # de seguir: a Bullex fecha o forex inteiro das 16h às 21h.
-            _h_ok = (horas_operaveis(GRADE_CORRETORA, [a["name"] for a in analise_list])
+            # BUG CORRIGIDO: passava o universo INTEIRO, incluindo cripto — que
+            # não tem grade e libera as 24h, matando o filtro. O gráfico é "só
+            # forex" (o próprio título diz), então o recorte de horas operáveis
+            # tem que olhar só os ativos que ele mostra. Com cripto no meio, a
+            # hora 17h aparecia como "boa" mesmo com a Bullex fechada.
+            _h_ok = (horas_operaveis(GRADE_CORRETORA,
+                                     [a["name"] for a in analise_list if a["type"] == "fx"])
                      if USAR_GRADE else set(range(24)))
             col = ""
             for h_ in range(24):
