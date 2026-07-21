@@ -2674,6 +2674,7 @@ def run_perf():
     out = {n: {"hoje": [0, 0], "per": [0, 0]} for n in STRATEGIES}
     horas = {h: [0, 0] for h in range(24)}          # hora BRT -> [ops, acertos]
     forcas = {"FORTE": [0, 0], "MEDIA": [0, 0], "FRACA": [0, 0]}   # força -> [ops, acertos]
+    ativos = {}                                     # ativo -> [ops, acertos] (só estratégias em uso)
     for a in analise_list:
         df = dhist.get(a["name"])
         if df is None or len(df) < 80:
@@ -2690,6 +2691,11 @@ def run_perf():
             r = backtest(d, sc)
             acc = out[name]
             acc["per"][0] += r["trades"]; acc["per"][1] += r["wins"]
+            # acumula POR ATIVO, só as estratégias em uso: comparar ativos numa
+            # estratégia que você não opera não ajuda a decidir onde operar.
+            if name in sel_strats:
+                _av = ativos.setdefault(a["name"], [0, 0])
+                _av[0] += r["trades"]; _av[1] += r["wins"]
             if tem_hoje:
                 rd = backtest(d_hoje, sc[m])
                 acc["hoje"][0] += rd["trades"]; acc["hoje"][1] += rd["wins"]
@@ -2698,7 +2704,7 @@ def run_perf():
             if name in sel_strats:
                 horas_backtest(d, sc, hb, horas)
                 forcas_backtest(d, sc, forcas)
-    return {"est": out, "horas": horas, "forcas": forcas}
+    return {"est": out, "horas": horas, "forcas": forcas, "ativos": ativos}
 
 
 def get_perf(calcular=False):
@@ -4065,6 +4071,57 @@ with tab_perf:
                     f"coluna «ao vivo» nunca vai receber operações abaixo disso — o que "
                     f"não é gravado não pode ser analisado depois. Para comparar as três "
                     f"faixas ao vivo, deixe a força mínima em **fraca** por um período.")
+
+        # ---------- BACKTEST POR ATIVO ----------
+        # Qual PAR tem melhor comportamento histórico com as estratégias em uso.
+        # A coluna que faz a diferença é o payout ao lado: taxa alta num par de
+        # payout ruim ainda perde dinheiro — foi assim que o NZD/USD passou
+        # despercebido a 30%. Ordena por MARGEM (taxa menos breakeven do próprio
+        # ativo), não por taxa crua, justamente para o payout entrar na conta.
+        _bt_ativos = cp["dados"].get("ativos") or {}
+        if _bt_ativos:
+            _linhas_a = []
+            for nome, (n_, w_) in _bt_ativos.items():
+                if n_ < 200:               # amostra pequena: mostra, mas sem ordenar bem
+                    _margem = -999
+                    _tx = (w_ / n_ * 100) if n_ else 0.0
+                    _be = breakeven(payout_de(nome)) * 100
+                else:
+                    _tx = w_ / n_ * 100
+                    _be = breakeven(payout_de(nome)) * 100
+                    _margem = _tx - _be
+                _linhas_a.append((nome, n_, w_, _tx, _be, _margem))
+            _linhas_a.sort(key=lambda x: -x[5])
+            linhas = ""
+            for nome, n_, w_, _tx, _be, _margem in _linhas_a:
+                if n_ < 200:
+                    linhas += (f'<tr><td class="nm">{nome}</td>'
+                               f'<td class="n">{wl(w_, n_)}</td>'
+                               f'<td class="n mono">{pct(payout_de(nome)*100, 0)}</td>'
+                               f'<td class="n mono">{pct(_be, 1)}</td>'
+                               f'<td class="n"><span class="n">amostra pequena</span></td></tr>')
+                    continue
+                _cls = "good" if _margem >= 0.5 else ("bad" if _margem <= -0.5 else "mid")
+                linhas += (f'<tr><td class="nm">{nome}</td>'
+                           f'<td class="n">{wl(w_, n_)}</td>'
+                           f'<td class="n mono">{pct(payout_de(nome)*100, 0)}</td>'
+                           f'<td class="n mono">{pct(_be, 1)}</td>'
+                           f'<td class="mono {_cls}" style="font-weight:700">'
+                           f'{_margem:+.1f} pp</td></tr>')
+            st.markdown('<div class="sect">Backtest por ativo</div>',
+                        unsafe_allow_html=True)
+            st.markdown(f'<table class="tbl"><tr><th>Ativo</th><th>Acerto · W/L</th>'
+                        f'<th>Payout</th><th>Breakeven</th><th>Margem</th></tr>'
+                        f'{linhas}</table>', unsafe_allow_html=True)
+            st.markdown(
+                '<div class="note">A <b>margem</b> é a taxa menos o breakeven do '
+                'próprio ativo — é ela, não a taxa, que diz se o par dá dinheiro, '
+                'porque embute o payout. Um ativo de acerto alto e payout baixo '
+                'aparece com margem negativa: foi o caso do NZD/USD (removido). '
+                'Isto é backtest sobre dezenas de milhares de velas, não a sua '
+                'operação real — serve para escolher onde focar, e some do vermelho '
+                'para o verde conforme você melhora payout com a corretora.</div>',
+                unsafe_allow_html=True)
 
         # ---------- MELHORES HORÁRIOS ----------
         tot_h = sum(v[0] for v in horas.values())
