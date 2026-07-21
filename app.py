@@ -1096,6 +1096,7 @@ HIST_REMOTO = all(_gh())
 CFG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "kairo_config.json")
 CFG_PADRAO = {
     "tf": "5", "estrategias": None, "forca": "FRACA", "mercado": "Tudo",
+    "horas_op": None,
     "payout": "80%", "intervalo": 15, "so_confluencia": False,
     "fora_sessao": False, "audio": False, "sistema": True,
     "usar_janela": False, "janela": [9, 17],
@@ -1281,10 +1282,13 @@ with tab_cfg:
         sistema_on = st.toggle("Sistema ativo", value=CFG.get("sistema", True),
                                help="Desligado, nenhuma entrada é gerada ou gravada "
                                     "no histórico.")
-        stake = st.number_input("Valor por entrada", min_value=0.0, step=5.0,
-                                value=float(CFG.get("stake", 10.0)),
-                                help="Usado só para calcular resultado financeiro e "
-                                     "drawdown. Fica gravado em cada sinal.")
+        # min 0.01: com 0 o valor vira falso em Python e os sinais gravados
+        # sumiam silenciosamente da aba Resultado, que filtra por ter valor.
+        stake = st.number_input("Valor por entrada", min_value=0.01, step=1.0,
+                                value=max(0.01, float(CFG.get("stake", 10.0))),
+                                help="Gravado em cada sinal novo. Mudar aqui NÃO "
+                                     "reescreve operações já registradas — elas "
+                                     "guardam o valor que valia na hora.")
         lim_on = st.toggle("Parar após perder X no dia",
                            value=CFG.get("limite_on", False),
                            help="A única proteção que funciona contra decisão "
@@ -1292,12 +1296,24 @@ with tab_cfg:
         lim_val = st.number_input("Limite de perda no dia", min_value=0.0, step=10.0,
                                   value=float(CFG.get("limite", 50.0)),
                                   disabled=not lim_on)
-        usar_janela = st.toggle("Operar só em uma faixa de horário",
+        usar_janela = st.toggle("Operar só em horários escolhidos",
                                 value=CFG.get("usar_janela", False))
-        jan_ini, jan_fim = st.slider("Faixa (horário de Brasília)", 0, 23,
-                                     tuple(CFG.get("janela", [9, 17])),
-                                     disabled=not usar_janela,
-                                     format="%dh")
+        # Seleção por hora, não por faixa única: assim dá para operar 9h–10h,
+        # parar, e voltar das 12h às 15h. Também casa com o painel de horários
+        # do Desempenho, que mostra o desempenho hora a hora.
+        _horas_salvas = CFG.get("horas_op")
+        if _horas_salvas is None:                      # migra a faixa antiga
+            _a, _b = CFG.get("janela", [9, 17])
+            _horas_salvas = (list(range(_a, _b + 1)) if _a <= _b
+                             else list(range(_a, 24)) + list(range(0, _b + 1)))
+        horas_op = st.multiselect(
+            "Horas permitidas (Brasília)", list(range(24)),
+            default=[h for h in _horas_salvas if 0 <= h <= 23],
+            format_func=lambda h: f"{h:02d}h–{(h+1) % 24:02d}h",
+            disabled=not usar_janela,
+            placeholder="Escolha as horas")
+        if usar_janela and not horas_op:
+            st.caption("Nenhuma hora marcada: o scanner ficará parado o dia todo.")
         st.markdown("**Mercados**")
         _mkts = ["Tudo", "Só forex", "Só cripto"]
         mercado = st.radio("Onde operar", _mkts,
@@ -1370,7 +1386,7 @@ cfg_save({
     "mercado": mercado, "payout": payout_lbl, "intervalo": int(every),
     "so_confluencia": bool(only_conf), "fora_sessao": bool(show_closed),
     "audio": bool(audio_on), "sistema": bool(sistema_on),
-    "usar_janela": bool(usar_janela), "janela": [int(jan_ini), int(jan_fim)],
+    "usar_janela": bool(usar_janela), "horas_op": [int(h) for h in horas_op],
     "stake": float(stake), "limite_on": bool(lim_on), "limite": float(lim_val),
 })
 
@@ -1486,11 +1502,7 @@ for a in scan_list:
 # mostrando dados e diagnóstico, mas NÃO emite entrada — e, como record_and_resolve
 # só grava o que está em `entries`, o histórico também não é contaminado.
 _h_br = br(now).hour
-if usar_janela:
-    dentro_janela = (jan_ini <= _h_br <= jan_fim) if jan_ini <= jan_fim \
-        else (_h_br >= jan_ini or _h_br <= jan_fim)
-else:
-    dentro_janela = True
+dentro_janela = (_h_br in set(horas_op)) if usar_janela else True
 # Limite de perda diária: consulta o histórico já gravado. Fica ANTES do gate
 # porque, uma vez atingido, nenhuma entrada nova deve ser gerada nem registrada.
 _perda_hoje = 0.0
@@ -1911,8 +1923,9 @@ with tab_sig:
         elif not sistema_on:
             _motivo = "Sistema desligado."
         else:
-            _motivo = (f"Fora da faixa de operação ({jan_ini}h–{jan_fim}h, "
-                       f"horário de Brasília). Agora são {_h_br}h.")
+            _hs = ", ".join(f"{h:02d}h" for h in sorted(horas_op)) or "nenhuma"
+            _motivo = (f"Fora do horário de operação. Agora são {_h_br:02d}h e as "
+                       f"horas liberadas são: {_hs}.")
         st.markdown(
             f'<div class="empty pausado"><div class="e-ico">'
             f'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"'
@@ -2049,6 +2062,31 @@ with tab_sig:
 with tab_res:
     _res_base = [h for h in hist if h.get("exec", True)
                  and h["res"] in ("ganhou", "perdeu", "empate") and h.get("stake")]
+
+    # Sinais gravados antes de existir "valor por entrada" — ou com valor zerado —
+    # não entram no cálculo financeiro. Antes sumiam sem explicação nenhuma.
+    _sem_valor = [h for h in hist if h.get("exec", True)
+                  and h["res"] in ("ganhou", "perdeu", "empate")
+                  and not h.get("stake")]
+    if _sem_valor:
+        st.markdown(
+            f'<div class="win alert"><span class="pt"></span><div class="msg">'
+            f'<b>{len(_sem_valor)} operação(ões) fora deste cálculo</b> por não terem '
+            f'valor de entrada gravado — são anteriores a esse campo existir. Elas '
+            f'continuam contando nas estatísticas de acerto, só não no resultado '
+            f'financeiro. Use o botão abaixo se todas foram feitas com o mesmo '
+            f'valor.</div></div>', unsafe_allow_html=True)
+        _c1, _c2 = st.columns([1.2, 3], vertical_alignment="center")
+        with _c1:
+            if st.button(f"Aplicar {stake:.2f} às antigas", key="btn_stake_retro"):
+                for h in hist:
+                    if not h.get("stake") and h["res"] in ("ganhou", "perdeu", "empate"):
+                        h["stake"] = float(stake)
+                hist_save(hist)
+                st.rerun()
+        with _c2:
+            st.caption("Preenche o valor só onde está faltando. Operações que já têm "
+                       "valor gravado não são tocadas.")
 
     if not _res_base:
         st.markdown('<div class="sect">Resultado financeiro</div>', unsafe_allow_html=True)
