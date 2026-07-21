@@ -1507,6 +1507,11 @@ body.foco [data-testid="stTabs"] [role="tabpanel"]{min-height:0}
 .pr-f{font-size:.63rem;color:var(--mut);line-height:1.55;margin-top:9px;
   padding-top:8px;border-top:1px solid var(--line)}
 /* selo na entrada: neutro, do mesmo peso das outras pastilhas */
+/* ponto Premium na tabela do histórico: discreto, só para localizar. Âmbar
+   neutro, não verde de "melhor" — Premium é hipótese em teste, não vitória. */
+.dot-prem{display:inline-block;width:6px;height:6px;border-radius:50%;
+  background:var(--warn);margin-left:7px;vertical-align:middle;
+  box-shadow:0 0 0 2px rgba(217,164,65,.18)}
 .selo-prem{display:inline-flex;align-items:center;gap:5px;font-size:.56rem;
   letter-spacing:.11em;text-transform:uppercase;font-weight:700;color:var(--ink2);
   background:var(--surf2);border:1px solid var(--line2);border-radius:999px;
@@ -2836,6 +2841,8 @@ def hist_df(h):
         "atraso_min": r.get("lag", ""), "fonte": r.get("src", ""),
         "payout": r.get("payout", ""),
         "cortado_por": r.get("bloq") or "",
+        "premium": "sim" if r.get("premium") else "não",
+        "premium_reprovou": ", ".join(r.get("prem_falhas") or []),
         "corpo_pct": r.get("q_corpo", ""), "atr_percentil": r.get("q_atrp", ""),
         # prova do resultado — para conferir contra o feed da corretora
         "apuracao_abertura": r.get("ap_open", ""), "apuracao_fech": r.get("ap_close", ""),
@@ -4276,13 +4283,21 @@ with tab_hist:
             f_frc = st.multiselect("Força", ["FRACA", "MEDIA", "FORTE"], default=[],
                                    format_func=lambda v: FL[v].capitalize(),
                                    placeholder="Todas")
+        # Filtro Premium: separado dos demais porque a pergunta é diferente —
+        # "quais entradas passaram nos seis critérios?". Marcar "Premium" isola
+        # exatamente as operações que o painel Premium × normal está medindo.
+        f_prem = st.radio("Premium", ["Todas", "Só premium", "Só não-premium"],
+                          horizontal=True, index=0)
         vis = [h for h in hist
                if (not f_est or any(x in f_est for x in h["strats"]))
                and (not f_res or (h["res"] or "aguardando") in f_res)
                and (not f_tf or h.get("tf") in f_tf)
                and (not f_mkt or TIPO_ATIVO.get(h["asset"]) in f_mkt)
                and (not f_coo or h.get("coorte") in f_coo)
-               and (not f_frc or h.get("force") in f_frc)]
+               and (not f_frc or h.get("force") in f_frc)
+               and (f_prem == "Todas"
+                    or (f_prem == "Só premium" and h.get("premium"))
+                    or (f_prem == "Só não-premium" and not h.get("premium")))]
         filtrado = len(vis) != len(hist)
         if filtrado:
             st.caption(f"Filtro ativo: {len(vis)} de {len(hist)} sinais. "
@@ -4761,8 +4776,12 @@ with tab_hist:
                               f'</span>')
                 else:
                     ap_txt = '<span class="n">—</span>'
+                # selo Premium: um ponto discreto ao lado do ativo, para
+                # localizar de relance quais entradas passaram nos seis critérios
+                _pm = ('<span class="dot-prem" title="Entrada premium: passou nos '
+                       'seis critérios"></span>' if h.get("premium") else "")
                 rows += (f'<tr><td class="n">{hm(h["ts"])}</td>'
-                         f'<td class="nm">{h["asset"]}</td>'
+                         f'<td class="nm">{h["asset"]}{_pm}</td>'
                          f'<td class="n mono">{h.get("tf", "—")}m</td>'
                          f'<td class="{dcls}" style="font-weight:800">{arw} {h["dir"]}</td>'
                          f'<td>{chips_h}</td>'
