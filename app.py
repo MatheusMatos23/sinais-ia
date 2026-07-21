@@ -1448,7 +1448,7 @@ CFG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "kairo_confi
 CFG_PADRAO = {
     "tf": "5", "estrategias": None, "forca": "FRACA", "mercado": "Tudo",
     "horas_op": None,
-    "payout": "80%", "intervalo": 15, "so_confluencia": False,
+    "payout": 80.0, "intervalo": 15, "so_confluencia": False,
     "fora_sessao": False, "audio": False, "sistema": True,
     "usar_janela": False, "janela": [9, 17],
     # ---- filtros de qualidade de entrada (cada um mede o próprio efeito) ----
@@ -1848,9 +1848,24 @@ with tab_cfg:
             </script>""", height=88)
     with o3:
         st.markdown("**Análise e atualização**")
-        payout_lbl = st.radio("Payout padrão da corretora", ["80%", "90%"],
-                              index=0 if CFG.get("payout", "80%") == "80%" else 1,
-                              horizontal=True)
+        # ERA UM RÁDIO DE 80% OU 90% — e payout não é escolha binária. Com o real
+        # em 85%, o app calculava breakeven de 55,56% quando o correto era 54,05%:
+        # 1,51 pp de erro, o bastante para uma estratégia entre esses dois valores
+        # aparecer como "abaixo do breakeven" estando ACIMA. O veredito de toda a
+        # aba Desempenho dependia desse número.
+        _pay_ini = CFG.get("payout", 80.0)
+        if isinstance(_pay_ini, str):                    # migra "80%" -> 80.0
+            _pay_ini = float(_pay_ini.replace("%", "").replace(",", ".") or 80)
+        payout_pct = st.number_input(
+            "Payout padrão da corretora (%)", min_value=50.0, max_value=100.0,
+            step=0.5, value=float(min(100.0, max(50.0, _pay_ini))), format="%.1f",
+            help="Use o payout MÉDIO que a corretora te paga hoje. É o número que "
+                 "define o breakeven, e portanto todo veredito do app. Errar aqui "
+                 "por 5 pontos move o breakeven em cerca de 1,5 ponto.")
+        payout_lbl = f"{num_br(f'{payout_pct:.1f}')}%"
+        st.caption(f"Breakeven correspondente: **{pct(100 / (1 + payout_pct / 100), 2)}** "
+                   f"— é a taxa de acerto abaixo da qual a operação perde dinheiro "
+                   f"no longo prazo, por construção.")
         st.caption("A pastilha *Ao vivo / Pausado* fica no cabeçalho, à direita.")
         every = st.slider("Intervalo (s)", 10, 60, int(CFG.get("intervalo", 15)),
                           step=5, disabled=not auto_on)
@@ -1880,7 +1895,7 @@ with tab_cfg:
 # quando algo mudou de fato, então isso não escreve em disco a cada rerun.
 cfg_save({
     "tf": TF, "estrategias": list(sel_strats), "forca": min_force,
-    "mercado": mercado, "payout": payout_lbl, "intervalo": int(every),
+    "mercado": mercado, "payout": float(payout_pct), "intervalo": int(every),
     "so_confluencia": bool(only_conf), "fora_sessao": bool(show_closed),
     "audio": bool(audio_on), "sistema": bool(sistema_on),
     "usar_janela": bool(usar_janela), "horas_op": [int(h) for h in horas_op],
@@ -1894,7 +1909,7 @@ cfg_save({
     "cb_pausa": int(cb_pausa),
 })
 
-PAYOUT = 0.80 if payout_lbl == "80%" else 0.90
+PAYOUT = float(payout_pct) / 100.0
 BE = breakeven(PAYOUT) * 100
 PAY_OVR = _pay_ovr
 
@@ -3228,10 +3243,13 @@ with tab_res:
             unsafe_allow_html=True)
         st.markdown(
             f'<div class="note">Este é o controle mais acionável do sistema. As melhores '
-            f'estratégias medidas aqui ficam entre 53% e 55% de acerto, e o breakeven cai '
-            f'de <b>55,6%</b> (payout 80%) para <b>52,6%</b> (payout 90%). Negociar payout '
-            f'com a corretora move mais o resultado do que trocar de estratégia — e é a '
-            f'única variável sob seu controle direto.</div>', unsafe_allow_html=True)
+            f'estratégias medidas aqui ficam entre 53% e 55% de acerto, e cada ponto de '
+            f'payout move o breakeven: <b>{pct(100/1.80, 2)}</b> a 80% · '
+            f'<b>{pct(100/1.85, 2)}</b> a 85% · <b>{pct(100/1.90, 2)}</b> a 90%. '
+            f'Seu payout atual é <b>{pct(payout_pct, 1)}</b>, breakeven '
+            f'<b>{pct(100/(1 + payout_pct/100), 2)}</b>. Negociar payout com a corretora '
+            f'move mais o resultado do que trocar de estratégia — e é a única variável '
+            f'sob seu controle direto.</div>', unsafe_allow_html=True)
 
         # ---------- sequência atual ----------
         _ordem = [h for h in sorted(_res_base, key=lambda x: x["ts"])
