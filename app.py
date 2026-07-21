@@ -1184,6 +1184,28 @@ def hist_save(h):
 
 
 
+def ops_para_concluir(w, n, payout, teto=20000):
+    """
+    Quantas operações A MAIS seriam necessárias para o IC95 sair de cima do
+    breakeven, mantida a taxa observada. Transforma "não conclusivo" — que hoje
+    é um beco sem saída — num número. Às vezes a resposta honesta é "nunca":
+    se a taxa está praticamente colada no breakeven, nenhum tamanho de amostra
+    resolve, e é isso que o retorno None comunica.
+    """
+    if n <= 0:
+        return None, None
+    p = w / n
+    be = breakeven(payout)
+    lado = "acima" if p > be else "abaixo"
+    m = n
+    while m < teto:
+        m = int(m * 1.15) + 10
+        lo, hi = wilson_ci(int(round(p * m)), m)[1:]
+        if (lado == "acima" and lo > be) or (lado == "abaixo" and hi < be):
+            return max(0, m - n), lado
+    return None, lado
+
+
 def pnl_de(h):
     """
     Resultado financeiro de um sinal, em unidades monetárias.
@@ -1349,6 +1371,27 @@ with tab_cfg:
           window.parent.sessionStorage.setItem('voz','1');say('Voz ativada.');estado();};
         estado();
         </script>""", height=88)
+        notif_on = st.toggle("Notificação do navegador na entrada",
+                             value=CFG.get("notif", False),
+                             help="Permite fechar a aba do app e ainda ser avisado.")
+        if notif_on:
+            html_box("""
+            <div style="font-family:Inter,sans-serif">
+              <button id="n" style="background:rgba(0,200,138,.10);color:#00C88A;
+                border:1px solid rgba(0,200,138,.32);border-radius:10px;padding:9px 15px;
+                font-weight:600;cursor:pointer;font-size:.78rem;font-family:inherit">
+                Permitir notificações</button>
+              <div id="ns" style="color:#6F7B93;font-size:.68rem;margin-top:7px"></div>
+            </div>
+            <script>
+            var el=document.getElementById('ns');
+            function est(){el.textContent = (window.Notification && Notification.permission==='granted')
+              ? 'Notificações permitidas.' : 'Ainda não permitidas neste navegador.';}
+            document.getElementById('n').onclick=function(){
+              if(window.Notification) Notification.requestPermission().then(est);
+            };
+            est();
+            </script>""", height=88)
     with o3:
         st.markdown("**Análise e atualização**")
         payout_lbl = st.radio("Payout padrão da corretora", ["80%", "90%"],
@@ -1388,6 +1431,7 @@ cfg_save({
     "audio": bool(audio_on), "sistema": bool(sistema_on),
     "usar_janela": bool(usar_janela), "horas_op": [int(h) for h in horas_op],
     "stake": float(stake), "limite_on": bool(lim_on), "limite": float(lim_val),
+    "notif": bool(notif_on),
 })
 
 PAYOUT = 0.80 if payout_lbl == "80%" else 0.90
@@ -1712,7 +1756,8 @@ def hist_df(h):
         "ativo": r["asset"], "direcao": r["dir"], "forca": FL.get(r["force"], r["force"]),
         "estrategias": "+".join(r["strats"]), "timeframe_min": r.get("tf", ""),
         "resultado": r["res"] or "aguardando",
-        "executei": bool(r.get("exec", False)),
+        "executei": bool(r.get("exec", False)), "coorte": r.get("coorte", ""),
+        "motivo": r.get("motivo", ""),
         "atraso_min": r.get("lag", ""), "fonte": r.get("src", ""),
         "payout": r.get("payout", ""),
     } for r in sorted(h, key=lambda x: x["ts"], reverse=True)])
@@ -1743,6 +1788,14 @@ def record_and_resolve(entries, data, minutes, na_janela):
             hist.append({"ck": ck, "ts": start, "asset": nome, "dir": e["dir"],
                          "force": e["force"], "strats": [_short(s) for s in e["strats"]],
                          "tf": minutes, "res": None, "janela": True,
+                         # Configuração vigente na hora do sinal. Sem isso, mudar
+                         # a força mínima ou o filtro de confluência passava a
+                         # misturar experimentos diferentes na mesma taxa, e o
+                         # número agregado deixava de responder qualquer coisa.
+                         "cfg_forca": min_force, "cfg_conf": bool(only_conf),
+                         "cfg_mkt": mercado,
+                         "coorte": f"{minutes}m·{min_force}"
+                                   f"{'·2+' if only_conf else ''}·{mercado}",
                          # instrumentação: permite medir depois se atraso derruba o acerto
                          "lag": (round(float(lag_ativo[nome]), 2)
                                  if nome in lag_ativo else None),
@@ -2041,21 +2094,33 @@ with tab_sig:
             pl = "estratégias" if len(top["strats"]) > 1 else "estratégia"
             fala = (f"Entrada agora. {top['a']['voz']}. {top['dir']}. "
                     f"{pl} {ests}. Força {FL[top['force']].lower()}.")
+            titulo_notif = (f"{top['a']['name']} · {top['dir']} · "
+                            f"força {FL[top['force']].lower()} · {ests}")
         else:
             fala = ""
+            titulo_notif = ""
         # Só o MOTOR de fala fica aqui, invisível. O botão de ativar mudou para a
         # aba Ajustes: liberar o áudio é configuração, não parte da operação.
         # (O navegador exige um clique do usuário antes de permitir voz.)
         st.markdown('<div class="wheel-pass"></div>', unsafe_allow_html=True)
         html_box(f"""
         <script>
-        var TF={int(TF)}, FALA={fala!r};
+        var TF={int(TF)}, FALA={fala!r}, NOTIF={str(bool(notif_on)).lower()};
+        var TITULO={titulo_notif!r};
         function say(t){{try{{var u=new SpeechSynthesisUtterance(t);u.lang='pt-BR';u.rate=1.05;
           window.speechSynthesis.cancel();window.speechSynthesis.speak(u);}}catch(e){{}}}}
-        (function(){{if(!FALA)return;if(window.parent.sessionStorage.getItem('voz')!=='1')return;
+        function notificar(t){{try{{
+          if(window.Notification && Notification.permission==='granted')
+            new Notification('Kairo · entrada agora', {{body:t, tag:'kairo-entrada'}});
+        }}catch(e){{}}}}
+        (function(){{if(!FALA)return;
           var per=TF*60,n=Date.now()/1000,pos=n%per,c=Math.floor(n/per);
-          if(pos<{ENTRY_WINDOW}&&window.parent.sessionStorage.getItem('dito')!=String(c)){{
-            window.parent.sessionStorage.setItem('dito',String(c));say(FALA);}}}})();
+          if(pos>={ENTRY_WINDOW})return;
+          if(window.parent.sessionStorage.getItem('dito')==String(c))return;
+          window.parent.sessionStorage.setItem('dito',String(c));
+          if(window.parent.sessionStorage.getItem('voz')==='1') say(FALA);
+          if(NOTIF) notificar(TITULO);
+        }})();
         </script>""", height=1)
 
 # ============================== ABA RESULTADO ==============================
@@ -2448,6 +2513,46 @@ with tab_perf:
                     '</div>', unsafe_allow_html=True)
         st.markdown(f'<table class="tbl">{cab}{linhas(outras)}</table>', unsafe_allow_html=True)
 
+        # ---------- BACKTEST × AO VIVO ----------
+        # O backtest não paga atraso de dados, execução nem spread. Se a taxa ao
+        # vivo fica muito abaixo da simulada com amostra suficiente, isso não é
+        # azar: é a diferença entre o mundo simulado e o real.
+        _viv = {}
+        for h in hist:
+            if h["res"] not in ("ganhou", "perdeu"):
+                continue
+            for _s in h["strats"]:
+                _viv.setdefault(_s, [0, 0])
+                _viv[_s][0] += 1
+                _viv[_s][1] += h["res"] == "ganhou"
+        _linhas_cmp = ""
+        for name in ranked:
+            _sig = name.split(" · ")[0]
+            nv, wv = _viv.get(_sig, [0, 0])
+            nb, wb = perf[name]["per"]
+            if nv < 30 or nb == 0:
+                continue
+            pv, pb = wv / nv * 100, wb / nb * 100
+            d = pv - pb
+            cls = "bad" if d <= -5 else ("good" if d >= 5 else "mid")
+            _linhas_cmp += (f'<tr><td class="nm">{name}</td>'
+                            f'<td class="n mono">{pb:.1f}%<span class="n"> · {nb} ops</span></td>'
+                            f'<td class="n mono">{pv:.1f}%<span class="n"> · {nv} ops</span></td>'
+                            f'<td class="mono {cls}" style="font-weight:700">{d:+.1f} pp</td>'
+                            f'</tr>')
+        if _linhas_cmp:
+            st.markdown('<div class="sect">Backtest × ao vivo</div>',
+                        unsafe_allow_html=True)
+            st.markdown(f'<table class="tbl"><tr><th>Estratégia</th>'
+                        f'<th>Backtest</th><th>Ao vivo</th><th>Diferença</th></tr>'
+                        f'{_linhas_cmp}</table>', unsafe_allow_html=True)
+            st.markdown('<div class="note">Uma queda consistente do backtest para o '
+                        'ao vivo mede o custo do mundo real: dado que chega atrasado, '
+                        'entrada que sai fora da abertura, preço que não é o mesmo. '
+                        'Só aparecem estratégias com pelo menos 30 operações ao vivo — '
+                        'abaixo disso a diferença é ruído.</div>',
+                        unsafe_allow_html=True)
+
         # ---------- MELHORES HORÁRIOS ----------
         tot_h = sum(v[0] for v in horas.values())
         if tot_h >= 500:
@@ -2566,11 +2671,19 @@ with tab_hist:
             f_mkt = st.multiselect("Mercado", ["fx", "crypto"], default=[],
                                    format_func=lambda v: "Forex" if v == "fx" else "Cripto",
                                    placeholder="Tudo")
+        _coortes = sorted({h.get("coorte") for h in hist if h.get("coorte")})
+        f_coo = st.multiselect(
+            "Configuração (coorte)", _coortes, default=[],
+            placeholder="Todas as configurações",
+            help="Cada sinal guarda a configuração que estava ativa quando foi "
+                 "gerado. Comparar taxas entre configurações diferentes não "
+                 "responde nada — filtre por uma de cada vez.")
         vis = [h for h in hist
                if (not f_est or any(x in f_est for x in h["strats"]))
                and (not f_res or (h["res"] or "aguardando") in f_res)
                and (not f_tf or h.get("tf") in f_tf)
-               and (not f_mkt or TIPO_ATIVO.get(h["asset"]) in f_mkt)]
+               and (not f_mkt or TIPO_ATIVO.get(h["asset"]) in f_mkt)
+               and (not f_coo or h.get("coorte") in f_coo)]
         filtrado = len(vis) != len(hist)
         if filtrado:
             st.caption(f"Filtro ativo: {len(vis)} de {len(hist)} sinais. "
@@ -2579,6 +2692,16 @@ with tab_hist:
             # Nada de st.stop() aqui: ele encerraria o script inteiro e levaria
             # junto o rodapé. As seções abaixo já degradam bem com lista vazia.
             st.info("Nenhum sinal atende aos filtros selecionados.")
+
+        _mix = {h.get("coorte") for h in vis if h.get("coorte")}
+        if len(_mix) > 1:
+            st.markdown(
+                f'<div class="win alert"><span class="pt"></span><div class="msg">'
+                f'<b>Este recorte mistura {len(_mix)} configurações diferentes.</b> '
+                f'Sinais gerados com força mínima, filtro ou mercado distintos estão '
+                f'somados na mesma taxa — o número resultante não descreve nenhuma '
+                f'delas. Use o filtro <i>Configuração</i> para olhar uma de cada vez.'
+                f'</div></div>', unsafe_allow_html=True)
 
         fechados = [h for h in vis if h["res"] in ("ganhou", "perdeu")]
         g = sum(1 for h in fechados if h["res"] == "ganhou")
@@ -2614,6 +2737,53 @@ with tab_hist:
             + stat("Taxa do forward test", taxa_txt, sub, tcls)
             + '</div>', unsafe_allow_html=True)
         st.caption(f"Breakeven {BE:.2f}% com payout {payout_lbl}.")
+
+        # ---- quanto falta para o veredito sair do "não conclusivo" ----
+        if fechados and v == "inconclusivo":
+            _falta, _lado = ops_para_concluir(g, len(fechados), _pay_amostra)
+            if _falta:
+                _dia_med = max(1, len(fechados) / max(1, len(
+                    {br(h["ts"]).date() for h in fechados})))
+                _dias = _falta / _dia_med
+                st.markdown(
+                    f'<div class="note"><b>Faltam cerca de {_falta} operações</b> para '
+                    f'o intervalo de confiança sair inteiro {_lado} do breakeven, '
+                    f'mantida a taxa atual de {taxa:.1f}%. No seu ritmo '
+                    f'(~{_dia_med:.0f} por dia), isso é aproximadamente '
+                    f'<b>{_dias:.0f} dias</b> de operação.</div>',
+                    unsafe_allow_html=True)
+            else:
+                st.markdown(
+                    f'<div class="note"><b>Nenhum tamanho de amostra resolveria isso.</b> '
+                    f'Com {taxa:.1f}% contra um breakeven de {_be_amostra:.1f}%, a '
+                    f'diferença é pequena demais: mesmo com 20 mil operações o intervalo '
+                    f'continuaria cruzando a linha. Na prática significa que, com este '
+                    f'payout, não há vantagem a ser encontrada — o caminho é negociar '
+                    f'payout melhor, não acumular mais dados.</div>',
+                    unsafe_allow_html=True)
+
+        # ---- teste das duas metades ----
+        # Se as duas metades discordam muito, o número agregado não descreve nada
+        # estável. É o teste mais barato contra a ilusão de ter achado alguma coisa.
+        _ord = sorted(fechados, key=lambda x: x["ts"])
+        if len(_ord) >= 30:
+            _meio = len(_ord) // 2
+            _a, _b = _ord[:_meio], _ord[_meio:]
+            _wa = sum(1 for x in _a if x["res"] == "ganhou")
+            _wb = sum(1 for x in _b if x["res"] == "ganhou")
+            _pa, _pb = _wa / len(_a) * 100, _wb / len(_b) * 100
+            _dif = abs(_pa - _pb)
+            _cls = "bad" if _dif >= 10 else ("mid" if _dif >= 5 else "good")
+            _msg = ("as duas metades discordam bastante — o número agregado não "
+                    "descreve um comportamento estável" if _dif >= 10 else
+                    "diferença moderada entre as metades" if _dif >= 5 else
+                    "as duas metades concordam, o que dá alguma confiança na estabilidade")
+            st.markdown(
+                f'<div class="note"><b>Teste das duas metades:</b> '
+                f'primeira <b class="{_cls}">{_pa:.1f}%</b> ({len(_a)} ops) · '
+                f'segunda <b class="{_cls}">{_pb:.1f}%</b> ({len(_b)} ops) · '
+                f'diferença de {_dif:.1f} pontos — {_msg}.</div>',
+                unsafe_allow_html=True)
 
         # ---- pendentes que o app não consegue apurar agora ----
         # A apuração lê a vela de entrada nos dados carregados. Se o sinal é de
@@ -2842,9 +3012,12 @@ with tab_hist:
         st.markdown('<div class="sect">O que você executou de fato</div>',
                     unsafe_allow_html=True)
         _recentes = sorted(vis, key=lambda x: x["ts"], reverse=True)[:25]
+        MOTIVOS = ["", "perdi a janela", "não gostei do setup",
+                   "exposição concentrada", "limite/saldo", "outro"]
         _tab = pd.DataFrame([{
             "id": f'{h["asset"]}|{h["dir"]}|{h.get("ck")}|{h.get("tf")}',
             "Executei": bool(h.get("exec", False)),
+            "Se não, por quê": h.get("motivo", ""),
             "Quando": dhm(h["ts"]), "Ativo": h["asset"], "Direção": h["dir"],
             "TF": f'{h.get("tf", "—")}m',
             "Estratégias": "+".join(h["strats"]),
@@ -2857,17 +3030,40 @@ with tab_hist:
                 "Executei": st.column_config.CheckboxColumn(
                     "Executei", help="Marque as entradas que você realmente operou.",
                     width="small"),
+                "Se não, por quê": st.column_config.SelectboxColumn(
+                    "Se não, por quê", options=MOTIVOS, width="medium",
+                    help="Saber o motivo revela se o atraso do app está custando "
+                         "entradas, ou se a filtragem é sua."),
             },
             disabled=["Quando", "Ativo", "Direção", "TF", "Estratégias", "Resultado"])
         _mudou = False
         _mapa = dict(zip(_ed["id"], _ed["Executei"]))
+        _mot = dict(zip(_ed["id"], _ed["Se não, por quê"]))
         for h in hist:
             k = f'{h["asset"]}|{h["dir"]}|{h.get("ck")}|{h.get("tf")}'
             if k in _mapa and bool(h.get("exec", False)) != bool(_mapa[k]):
                 h["exec"] = bool(_mapa[k]); _mudou = True
+            if k in _mot and (h.get("motivo") or "") != (_mot[k] or ""):
+                h["motivo"] = _mot[k] or ""; _mudou = True
         if _mudou:
             hist_save(hist)
             st.rerun()
+
+        _mots = {}
+        for h in vis:
+            if not h.get("exec") and h.get("motivo"):
+                _mots[h["motivo"]] = _mots.get(h["motivo"], 0) + 1
+        if _mots:
+            _tot_m = sum(_mots.values())
+            _txt_m = " · ".join(f'<b>{v}</b> {k}' for k, v in
+                                sorted(_mots.items(), key=lambda kv: -kv[1]))
+            _perdi = _mots.get("perdi a janela", 0)
+            _obs = ("" if not _perdi else
+                    f' Perder a janela em {_perdi/_tot_m*100:.0f}% dos casos é um '
+                    f'problema de latência, não de estratégia — vale olhar a pastilha '
+                    f'"sinal pronto em" na aba Sinais.')
+            st.markdown(f'<div class="note"><b>Por que não executou:</b> {_txt_m}.'
+                        f'{_obs}</div>', unsafe_allow_html=True)
 
         _exec = [h for h in vis if h.get("exec")
                  and h["res"] in ("ganhou", "perdeu")]
