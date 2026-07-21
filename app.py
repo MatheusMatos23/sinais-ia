@@ -1105,6 +1105,72 @@ def cfg_save(cfg):
 
 CFG = cfg_load()
 
+# ---------- persistência do histórico ----------
+HIST_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hist_signals.json")
+
+
+
+
+def hist_load():
+    """Carrega o histórico: Gist (se configurado) e disco local, unindo os dois."""
+    if "hist" in st.session_state:
+        return st.session_state["hist"]
+    bruto = []
+    remoto = gist_load()
+    if remoto:
+        bruto.extend(remoto)
+    try:
+        if os.path.exists(HIST_PATH):
+            with open(HIST_PATH, "r", encoding="utf-8") as f:
+                bruto.extend(json.load(f))
+    except Exception:
+        pass
+    vistos, h = set(), []
+    for r in bruto:                                   # de-duplica local x remoto
+        try:
+            r["ts"] = pd.Timestamp(r["ts"])
+        except Exception:
+            continue
+        k = (r.get("asset"), r.get("dir"), r.get("ck"), r.get("tf"))
+        if k in vistos:
+            continue
+        vistos.add(k)
+        h.append(r)
+    h.sort(key=lambda x: x["ts"])
+    st.session_state["hist"] = h
+    return h
+
+
+def hist_save(h):
+    out = [{**r, "ts": pd.Timestamp(r["ts"]).isoformat()} for r in h]
+    try:
+        with open(HIST_PATH, "w", encoding="utf-8") as f:
+            json.dump(out, f, ensure_ascii=False)
+    except Exception:
+        pass
+    gist_save(out)
+
+
+
+def pnl_de(h):
+    """
+    Resultado financeiro de um sinal, em unidades monetárias.
+    Binária: acerto devolve a aposta + payout; erro perde a aposta; empate zera.
+    Usa o payout e o valor GRAVADOS no sinal, não os atuais — senão mudar o
+    payout hoje reescreveria o resultado de operações passadas.
+    """
+    v = float(h.get("stake") or 0)
+    if not v or h.get("res") not in ("ganhou", "perdeu"):
+        return 0.0
+    p = float(h.get("payout") or 0.8)
+    return v * p if h["res"] == "ganhou" else -v
+
+
+def pnl_do_dia(hist_, dia_br):
+    return sum(pnl_de(h) for h in hist_
+               if br(h["ts"]).date() == dia_br and h.get("exec", True))
+
+
 topbar_slot = st.empty()          # a barra de status é preenchida depois (precisa dos dados)
 st.markdown('<div class="ctrlbar">', unsafe_allow_html=True)
 # Três colunas. A chave "Ao vivo" saiu daqui: ela é um link no cabeçalho, HTML
@@ -1183,6 +1249,17 @@ with tab_cfg:
         sistema_on = st.toggle("Sistema ativo", value=CFG.get("sistema", True),
                                help="Desligado, nenhuma entrada é gerada ou gravada "
                                     "no histórico.")
+        stake = st.number_input("Valor por entrada", min_value=0.0, step=5.0,
+                                value=float(CFG.get("stake", 10.0)),
+                                help="Usado só para calcular resultado financeiro e "
+                                     "drawdown. Fica gravado em cada sinal.")
+        lim_on = st.toggle("Parar após perder X no dia",
+                           value=CFG.get("limite_on", False),
+                           help="A única proteção que funciona contra decisão "
+                                "emocional é a que você toma antes.")
+        lim_val = st.number_input("Limite de perda no dia", min_value=0.0, step=10.0,
+                                  value=float(CFG.get("limite", 50.0)),
+                                  disabled=not lim_on)
         usar_janela = st.toggle("Operar só em uma faixa de horário",
                                 value=CFG.get("usar_janela", False))
         jan_ini, jan_fim = st.slider("Faixa (horário de Brasília)", 0, 23,
@@ -1262,6 +1339,7 @@ cfg_save({
     "so_confluencia": bool(only_conf), "fora_sessao": bool(show_closed),
     "audio": bool(audio_on), "sistema": bool(sistema_on),
     "usar_janela": bool(usar_janela), "janela": [int(jan_ini), int(jan_fim)],
+    "stake": float(stake), "limite_on": bool(lim_on), "limite": float(lim_val),
 })
 
 PAYOUT = 0.80 if payout_lbl == "80%" else 0.90
@@ -1381,7 +1459,15 @@ if usar_janela:
         else (_h_br >= jan_ini or _h_br <= jan_fim)
 else:
     dentro_janela = True
-operando = sistema_on and dentro_janela
+# Limite de perda diária: consulta o histórico já gravado. Fica ANTES do gate
+# porque, uma vez atingido, nenhuma entrada nova deve ser gerada nem registrada.
+_perda_hoje = 0.0
+_bloqueio_perda = False
+if lim_on and lim_val > 0:
+    _perda_hoje = pnl_do_dia(hist_load(), br(now).date())
+    _bloqueio_perda = _perda_hoje <= -abs(lim_val)
+
+operando = sistema_on and dentro_janela and not _bloqueio_perda
 
 entries = list(agg.values()) if operando else []
 minf = {"FRACA": 1, "MÉDIA": 2, "FORTE": 3}[min_force]
@@ -1568,52 +1654,6 @@ def _short(nm):
     return nm.split("·")[0].strip()
 
 
-# ---------- persistência do histórico ----------
-HIST_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hist_signals.json")
-
-
-
-
-def hist_load():
-    """Carrega o histórico: Gist (se configurado) e disco local, unindo os dois."""
-    if "hist" in st.session_state:
-        return st.session_state["hist"]
-    bruto = []
-    remoto = gist_load()
-    if remoto:
-        bruto.extend(remoto)
-    try:
-        if os.path.exists(HIST_PATH):
-            with open(HIST_PATH, "r", encoding="utf-8") as f:
-                bruto.extend(json.load(f))
-    except Exception:
-        pass
-    vistos, h = set(), []
-    for r in bruto:                                   # de-duplica local x remoto
-        try:
-            r["ts"] = pd.Timestamp(r["ts"])
-        except Exception:
-            continue
-        k = (r.get("asset"), r.get("dir"), r.get("ck"), r.get("tf"))
-        if k in vistos:
-            continue
-        vistos.add(k)
-        h.append(r)
-    h.sort(key=lambda x: x["ts"])
-    st.session_state["hist"] = h
-    return h
-
-
-def hist_save(h):
-    out = [{**r, "ts": pd.Timestamp(r["ts"]).isoformat()} for r in h]
-    try:
-        with open(HIST_PATH, "w", encoding="utf-8") as f:
-            json.dump(out, f, ensure_ascii=False)
-    except Exception:
-        pass
-    gist_save(out)
-
-
 def hist_df(h):
     if not h:
         return pd.DataFrame()
@@ -1657,7 +1697,7 @@ def record_and_resolve(entries, data, minutes, na_janela):
                          "lag": (round(float(lag_ativo[nome]), 2)
                                  if nome in lag_ativo else None),
                          "src": st.session_state.get("fontes", {}).get(nome, "?"),
-                         "payout": payout_de(nome)})
+                         "payout": payout_de(nome), "stake": float(stake)})
             seen.add(k)
             changed = True
     for h in hist:                                        # apura o que já fechou
@@ -1822,9 +1862,14 @@ with tab_sig:
         st.caption(f"Twelve Data: {err}")
 
     if not operando:
-        _motivo = ("Sistema desligado." if not sistema_on
-                   else f"Fora da faixa de operação ({jan_ini}h–{jan_fim}h, "
-                        f"horário de Brasília). Agora são {_h_br}h.")
+        if _bloqueio_perda:
+            _motivo = (f"Limite de perda do dia atingido: {_perda_hoje:.2f} de "
+                       f"−{abs(lim_val):.2f}. O sistema para até amanhã.")
+        elif not sistema_on:
+            _motivo = "Sistema desligado."
+        else:
+            _motivo = (f"Fora da faixa de operação ({jan_ini}h–{jan_fim}h, "
+                       f"horário de Brasília). Agora são {_h_br}h.")
         st.markdown(
             f'<div class="empty pausado"><div class="e-ico">'
             f'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"'
@@ -1853,6 +1898,35 @@ with tab_sig:
             st.markdown(f'<div class="grid">{cards}</div>', unsafe_allow_html=True)
         else:
             st.caption("Esta é a única entrada no momento.")
+
+    # ---- exposição correlacionada ----
+    # Três pares com a mesma moeda não são três apostas independentes. COMPRA
+    # EUR/USD e VENDA USD/JPY são, as duas, apostas contra o dólar: se o dólar
+    # subir, as duas perdem juntas. Quem opera isso como diversificação está com
+    # o triplo do risco achando que dividiu.
+    if len(entries) > 1:
+        _expo = {}
+        for e in entries:
+            a = next((x for x in ASSETS if x["name"] == e["a"]["name"]), None)
+            if not a or a["type"] != "fx" or len(a["cur"]) != 2:
+                continue
+            base, cotada = a["cur"]
+            sinal = 1 if e["dir"] == "COMPRA" else -1
+            _expo[base] = _expo.get(base, 0) + sinal      # compra o par = compra a base
+            _expo[cotada] = _expo.get(cotada, 0) - sinal  # e vende a cotada
+        _conc = sorted(((m, v) for m, v in _expo.items() if abs(v) >= 2),
+                       key=lambda kv: -abs(kv[1]))
+        if _conc:
+            _txt = " · ".join(
+                f'<b>{"comprado" if v > 0 else "vendido"} em {m}</b> ×{abs(v)}'
+                for m, v in _conc[:3])
+            st.markdown(
+                f'<div class="win alert"><span class="pt"></span><div class="msg">'
+                f'<b>Exposição concentrada.</b> {_txt}. Essas entradas não são '
+                f'independentes: elas ganham e perdem juntas conforme essa moeda se '
+                f'mexe. Operar as {len(entries)} como se fossem apostas separadas '
+                f'multiplica o risco em vez de diluí-lo.</div></div>',
+                unsafe_allow_html=True)
 
     # ---- o que já foi REGISTRADO nesta vela ----
     # A aba Sinais mostra o resultado da varredura DE AGORA; o Histórico mostra o
@@ -2241,6 +2315,66 @@ with tab_hist:
                 f'com os dados carregados. Para resolvê-los, volte ao timeframe e ao '
                 f'mercado correspondentes por alguns instantes.</div></div>',
                 unsafe_allow_html=True)
+
+        # ---- curva de capital, drawdown e referência aleatória ----
+        # A taxa de acerto esconde o que quebra conta: duas estratégias com 54%
+        # podem ter sequências de perda muito diferentes, e é a sequência que
+        # determina o tamanho da banca necessária.
+        _cap = [h for h in sorted(vis, key=lambda x: x["ts"])
+                if h["res"] in ("ganhou", "perdeu", "empate") and h.get("stake")]
+        if len(_cap) >= 8:
+            eq, pico, ddmax, ddmax_pct = [], 0.0, 0.0, 0.0
+            acc = 0.0
+            for h in _cap:
+                acc += pnl_de(h)
+                eq.append(acc)
+                pico = max(pico, acc)
+                dd = pico - acc
+                if dd > ddmax:
+                    ddmax = dd
+                    ddmax_pct = (dd / pico * 100) if pico > 0 else 0.0
+            # referência: mesma sequência de apostas com 50% de acerto (moeda)
+            _pm = sum(float(h.get("payout") or .8) for h in _cap) / len(_cap)
+            _sm = sum(float(h.get("stake") or 0) for h in _cap) / len(_cap)
+            _passo = _sm * (0.5 * _pm - 0.5)          # esperança por operação
+            ref = [_passo * (i + 1) for i in range(len(_cap))]
+
+            _todos = eq + ref
+            _lo, _hi = min(_todos + [0.0]), max(_todos + [0.0])
+            _rng = max(_hi - _lo, 1e-9)
+            H2 = 40.0
+
+            def _y2(v):
+                return H2 - (v - _lo) / _rng * H2
+
+            _p1 = " ".join(f"{i/(len(eq)-1)*100:.2f},{_y2(v):.2f}"
+                           for i, v in enumerate(eq))
+            _p2 = " ".join(f"{i/(len(ref)-1)*100:.2f},{_y2(v):.2f}"
+                           for i, v in enumerate(ref))
+            _cor = "var(--buy)" if eq[-1] >= 0 else "var(--sell)"
+            st.markdown(
+                f'<div class="curva"><div class="c-head">'
+                f'<span class="k">Resultado acumulado · valor por entrada gravado</span>'
+                f'<span class="lg"><i class="be"></i>moeda (50%)</span></div>'
+                f'<svg viewBox="0 0 100 {H2}" preserveAspectRatio="none">'
+                f'<line x1="0" y1="{_y2(0):.2f}" x2="100" y2="{_y2(0):.2f}" '
+                f'stroke="var(--line2)" stroke-width=".3"/>'
+                f'<polyline points="{_p2}" fill="none" stroke="var(--warn)" '
+                f'stroke-width=".7" stroke-dasharray="2 2" vector-effect="non-scaling-stroke" '
+                f'opacity=".8"/>'
+                f'<polyline points="{_p1}" fill="none" stroke="{_cor}" stroke-width="1" '
+                f'vector-effect="non-scaling-stroke" stroke-linejoin="round"/></svg>'
+                f'<div class="c-foot"><span>{len(_cap)} operações</span>'
+                f'<span class="mono">resultado {eq[-1]:+.2f} · '
+                f'pior queda {ddmax:.2f}'
+                f'{f" ({ddmax_pct:.0f}% do pico)" if ddmax_pct else ""}</span></div></div>'
+                f'<div class="note">A linha tracejada é o que uma <b>moeda</b> renderia '
+                f'nas mesmas apostas: com payout médio de {_pm*100:.0f}%, acertar metade '
+                f'das vezes dá prejuízo constante. Estar acima dela não significa ter '
+                f'vantagem — significa apenas não estar perdendo no ritmo do acaso. '
+                f'<b>Pior queda</b> é a maior distância entre um pico e o vale seguinte: '
+                f'é ela, não a taxa de acerto, que define o tamanho de banca necessário.'
+                f'</div>', unsafe_allow_html=True)
 
         # ---- aviso de sequência ruim ----
         # Não prova nada sobre a estratégia: sequências ruins acontecem mesmo com
