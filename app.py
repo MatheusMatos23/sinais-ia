@@ -3163,6 +3163,42 @@ with tab_res:
                 f'próximas operações entram com o valor errado.</div></div>',
                 unsafe_allow_html=True)
 
+    # ---- corrigir valor gravado errado ----
+    # O botão antigo só preenchia valor AUSENTE. Quando a configuração se perde
+    # num rebuild, o valor volta ao padrão e as operações seguintes são gravadas
+    # com um número errado — não ausente, errado — e nenhuma ferramenta cobria
+    # esse caso. Reescrever histórico é sério, então isto fica atrás de uma
+    # confirmação explícita e recomenda baixar o CSV antes.
+    _divergentes = [h for h in hist_todos
+                    if isinstance(h.get("stake"), (int, float)) and h["stake"]
+                    and abs(float(h["stake"]) - float(stake)) > 0.005]
+    if _divergentes:
+        _vals = sorted({round(float(h["stake"]), 2) for h in _divergentes})
+        st.markdown(
+            f'<div class="win alert"><span class="pt"></span><div class="msg">'
+            f'<b>{len(_divergentes)} operação(ões) com valor diferente do configurado.</b> '
+            f'Gravadas com {", ".join(f"{v:.2f}" for v in _vals)}; o valor atual é '
+            f'{float(stake):.2f}. Se isso foi uma perda de configuração e todas foram '
+            f'feitas com {float(stake):.2f}, dá para uniformizar abaixo. Se você mudou '
+            f'de valor de propósito ao longo do teste, <b>não use</b> — os valores '
+            f'gravados estão certos e reescrevê-los falsificaria o resultado.'
+            f'</div></div>', unsafe_allow_html=True)
+        _u1, _u2 = st.columns([1.4, 3], vertical_alignment="center")
+        with _u1:
+            _confirma = st.checkbox("Confirmo a reescrita", key="ck_stake_uniforme")
+            if st.button(f"Uniformizar em {float(stake):.2f}", key="btn_stake_uni",
+                         disabled=not _confirma):
+                for h in hist_todos:
+                    if isinstance(h.get("stake"), (int, float)) and h["stake"]:
+                        h["stake"] = float(stake)
+                hist_save(hist_todos)
+                st.rerun()
+        with _u2:
+            st.caption("Isto altera o histórico e não tem desfazer. Baixe o CSV em "
+                       "Histórico → Backup e importação antes, se quiser poder voltar. "
+                       "Só o valor por entrada muda; resultado, horário e preços de "
+                       "apuração ficam intactos.")
+
     # Sinais gravados antes de existir "valor por entrada" — ou com valor zerado —
     # não entram no cálculo financeiro. Antes sumiam sem explicação nenhuma.
     _sem_valor = [h for h in hist
