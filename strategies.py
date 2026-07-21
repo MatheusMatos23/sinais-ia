@@ -58,6 +58,9 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     mdi = 100 * minus.ewm(alpha=1/14, adjust=False).mean() / atr14.replace(0, np.nan)
     dx = 100 * (pdi - mdi).abs() / (pdi + mdi).replace(0, np.nan)
     d["adx"] = dx.ewm(alpha=1/14, adjust=False).mean().fillna(50)
+    # ATR exposto: os filtros de regime de volatilidade do app precisam dele.
+    # Já era calculado aqui para o ADX; só não saía da função.
+    d["atr"] = atr14
     return d
 
 

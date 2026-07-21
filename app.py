@@ -29,6 +29,13 @@ try:
     BR_TZ = ZoneInfo("America/Sao_Paulo")
 except Exception:                                   # fallback: UTC-3 fixo
     BR_TZ = timezone(timedelta(hours=-3))
+# Nova York: os dados macro dos EUA saem em horário de lá, e o horário de verão
+# americano começa e termina em datas diferentes do resto. Converter "08:30 ET"
+# na mão erraria por uma hora em boa parte do ano.
+try:
+    NY_TZ = ZoneInfo("America/New_York")
+except Exception:
+    NY_TZ = timezone(timedelta(hours=-4))
 
 import numpy as np
 import pandas as pd
@@ -1100,6 +1107,11 @@ CFG_PADRAO = {
     "payout": "80%", "intervalo": 15, "so_confluencia": False,
     "fora_sessao": False, "audio": False, "sistema": True,
     "usar_janela": False, "janela": [9, 17],
+    # ---- filtros de qualidade de entrada (cada um mede o próprio efeito) ----
+    "f_corpo_on": False, "f_corpo_min": 35,        # corpo mínimo em % do range
+    "f_atr_on": False, "f_atr_lo": 20, "f_atr_hi": 90,   # percentis de ATR aceitos
+    "f_news_on": False, "f_news_min": 15, "f_news_txt": "",
+    "cb_on": False, "cb_n": 30, "cb_pausa": 60,
 }
 
 
@@ -1349,6 +1361,58 @@ with tab_cfg:
                               value=CFG.get("so_confluencia", False))
         show_closed = st.toggle("Incluir pares fora de sessão",
                                 value=CFG.get("fora_sessao", False))
+
+        # ---- filtros de qualidade -------------------------------------------
+        # Todos são MEDIDOS: o sinal reprovado continua sendo gravado e apurado,
+        # marcado com o motivo. Isso dá o contrafactual de graça — dá para ver
+        # se o que o filtro cortou acertava mais ou menos do que o que passou.
+        # Sem isso, ligar um filtro é fé, não medição.
+        st.markdown("**Filtros de qualidade** — o que for reprovado não vira "
+                    "entrada, mas continua sendo apurado para medir se o filtro "
+                    "ajuda de verdade.")
+        f_corpo_on = st.toggle("Ignorar velas sem corpo (anti-doji)",
+                               value=CFG.get("f_corpo_on", False),
+                               help="A entrada resolve pela COR da vela seguinte. "
+                                    "Vela de corpo minúsculo vira por ruído puro.")
+        f_corpo_min = st.slider("Corpo mínimo (% do range da vela)", 5, 80,
+                                int(CFG.get("f_corpo_min", 35)), step=5,
+                                disabled=not f_corpo_on)
+        f_atr_on = st.toggle("Filtrar por regime de volatilidade (ATR)",
+                             value=CFG.get("f_atr_on", False),
+                             help="ATR muito baixo = mercado parado, o spread come "
+                                  "o movimento. ATR muito alto = moeda ao ar.")
+        f_atr_lo, f_atr_hi = st.slider(
+            "Faixa aceita (percentil do ATR nas últimas 200 velas)", 0, 100,
+            (int(CFG.get("f_atr_lo", 20)), int(CFG.get("f_atr_hi", 90))),
+            step=5, disabled=not f_atr_on)
+        f_news_on = st.toggle("Bloquear janelas de notícia de alto impacto",
+                              value=CFG.get("f_news_on", False),
+                              help="É o único filtro com causa óbvia: em release "
+                                   "de dado forte o preço deixa de seguir padrão "
+                                   "técnico nenhum.")
+        f_news_min = st.slider("Bloquear ± minutos ao redor do evento", 5, 60,
+                               int(CFG.get("f_news_min", 15)), step=5,
+                               disabled=not f_news_on)
+        f_news_txt = st.text_area(
+            "Eventos extras (um por linha: AAAA-MM-DD HH:MM, horário de Brasília)",
+            value=CFG.get("f_news_txt", ""), height=90, disabled=not f_news_on,
+            placeholder="2026-07-29 15:00   FOMC\n2026-08-12 09:30   CPI",
+            help="O app bloqueia sozinho só o que tem data fixa e previsível: "
+                 "payroll (1ª sexta do mês, 8h30 de Nova York) e pedidos de "
+                 "seguro-desemprego (toda quinta, 8h30 NY). CPI, FOMC, PIB e "
+                 "afins mudam de data todo mês — esses você cola aqui, copiando "
+                 "do calendário econômico da sua corretora. Não invento datas "
+                 "que não tenho como saber.")
+        st.markdown("**Freio automático**")
+        cb_on = st.toggle("Pausar coorte que estiver perdendo",
+                          value=CFG.get("cb_on", False),
+                          help="Suspende automaticamente a configuração atual "
+                               "quando as últimas N operações ficam abaixo do "
+                               "breakeven com significância estatística.")
+        cb_n = st.slider("Janela avaliada (últimas N operações)", 20, 100,
+                         int(CFG.get("cb_n", 30)), step=10, disabled=not cb_on)
+        cb_pausa = st.slider("Pausa após disparar (minutos)", 15, 240,
+                             int(CFG.get("cb_pausa", 60)), step=15, disabled=not cb_on)
     with o2:
         st.markdown("**Áudio**")
         audio_on = st.toggle("🔊 Aviso por voz na entrada", value=CFG.get("audio", False))
@@ -1441,6 +1505,11 @@ cfg_save({
     "usar_janela": bool(usar_janela), "horas_op": [int(h) for h in horas_op],
     "stake": float(stake), "limite_on": bool(lim_on), "limite": float(lim_val),
     "notif": bool(notif_on),
+    "f_corpo_on": bool(f_corpo_on), "f_corpo_min": int(f_corpo_min),
+    "f_atr_on": bool(f_atr_on), "f_atr_lo": int(f_atr_lo), "f_atr_hi": int(f_atr_hi),
+    "f_news_on": bool(f_news_on), "f_news_min": int(f_news_min),
+    "f_news_txt": str(f_news_txt), "cb_on": bool(cb_on), "cb_n": int(cb_n),
+    "cb_pausa": int(cb_pausa),
 })
 
 PAYOUT = 0.80 if payout_lbl == "80%" else 0.90
@@ -1454,6 +1523,60 @@ def payout_de(nome):
 
 now = datetime.now(timezone.utc)
 interval, minutes = TF_YF[TF], int(TF)
+
+
+# ---------- filtro de notícias de alto impacto ----------
+# Só entram aqui eventos de data DETERMINÍSTICA. Payroll é sempre a 1ª sexta do
+# mês e os pedidos de seguro-desemprego são sempre na quinta, ambos às 8h30 de
+# Nova York. CPI, PIB e FOMC mudam de data — chutar essas datas produziria
+# bloqueios errados, então elas ficam na lista manual.
+def eventos_recorrentes(dia_ny):
+    """Horários (em NY) de eventos previsíveis no dia. dia_ny é um `date`."""
+    ev = []
+    if dia_ny.weekday() == 3:                                  # quinta
+        ev.append((8, 30, "pedidos de seguro-desemprego (EUA)"))
+    if dia_ny.weekday() == 4 and dia_ny.day <= 7:              # 1ª sexta do mês
+        ev.append((8, 30, "payroll (EUA)"))
+    return ev
+
+
+def eventos_manuais(txt):
+    """Lê 'AAAA-MM-DD HH:MM  rótulo' por linha, em horário de Brasília."""
+    out = []
+    for linha in (txt or "").splitlines():
+        linha = linha.strip()
+        if not linha or linha.startswith("#"):
+            continue
+        partes = linha.split(maxsplit=2)
+        if len(partes) < 2:
+            continue
+        try:
+            dt = datetime.strptime(f"{partes[0]} {partes[1]}", "%Y-%m-%d %H:%M")
+        except ValueError:
+            continue                                   # linha malformada é ignorada
+        rot = partes[2].strip() if len(partes) > 2 else "evento"
+        out.append((dt.replace(tzinfo=BR_TZ).astimezone(timezone.utc), rot))
+    return out
+
+
+def janela_de_noticia(agora_utc, minutos, txt):
+    """(bloqueado, rótulo). Cobre ± `minutos` ao redor de cada evento."""
+    marg = timedelta(minutes=minutos)
+    ny = agora_utc.astimezone(NY_TZ)
+    alvos = []
+    for dia in (ny.date() - timedelta(days=1), ny.date(), ny.date() + timedelta(days=1)):
+        for hh, mm, rot in eventos_recorrentes(dia):
+            alvos.append((datetime(dia.year, dia.month, dia.day, hh, mm,
+                                   tzinfo=NY_TZ).astimezone(timezone.utc), rot))
+    alvos += eventos_manuais(txt)
+    for quando, rot in alvos:
+        if abs(agora_utc - quando) <= marg:
+            return True, f"{rot} às {hm(quando)}"
+    return False, ""
+
+
+noticia_ativa, noticia_rot = ((False, "") if not f_news_on
+                              else janela_de_noticia(now, int(f_news_min), f_news_txt))
 
 # ---- janela de entrada: o backtest assume entrada na ABERTURA da vela ----
 ENTRY_WINDOW = 20                                   # segundos válidos após a virada
@@ -1529,6 +1652,7 @@ bloqueados = set(sem_vela)
 
 # ============================== SCANNER ==============================
 agg = {}
+qualidade = {}                       # ativo -> métricas da vela de sinal
 for a in scan_list:
     if a["name"] in bloqueados:        # dado vencido: não vira entrada
         continue
@@ -1536,6 +1660,17 @@ for a in scan_list:
     if df is None or len(df) < 60:
         continue
     d = add_indicators(df.iloc[:-1])           # descarta a vela em formação
+    # Métricas de qualidade da vela de sinal. Medidas SEMPRE, mesmo com os
+    # filtros desligados: elas são gravadas no histórico e é o que permite,
+    # depois, perguntar "meus doji acertavam menos?" sem ter cortado nada antes.
+    _u = d.iloc[-1]
+    _rng = float(_u.get("rng", 0.0) or 0.0)
+    _corpo_pct = (float(_u["body"]) / _rng * 100.0) if _rng > 0 else 0.0
+    _serie_atr = d["atr"].tail(200).dropna()
+    _atr_pct = (float((_serie_atr <= float(_u["atr"])).mean() * 100.0)
+                if len(_serie_atr) >= 30 and math.isfinite(float(_u["atr"])) else None)
+    qualidade[a["name"]] = {"corpo": round(_corpo_pct, 1),
+                            "atrp": None if _atr_pct is None else round(_atr_pct, 1)}
     for nm in sel_strats:
         sc = score_of(nm, d, interval)
         last = float(sc.iloc[-1]) if len(sc) else 0.0
@@ -1564,7 +1699,40 @@ if lim_on and lim_val > 0:
     _perda_hoje = pnl_do_dia(hist_load(), br(now).date())
     _bloqueio_perda = _perda_hoje <= -abs(lim_val)
 
-operando = sistema_on and dentro_janela and not _bloqueio_perda
+COORTE = (f"{minutes}m·{min_force}"
+          f"{'·2+' if only_conf else ''}·{mercado}")
+
+# ---- freio automático por coorte ----
+# Dispara quando o LIMITE SUPERIOR de Wilson das últimas N operações desta mesma
+# configuração fica abaixo do breakeven: não é "perdi umas seguidas", é "mesmo
+# sendo otimista com o intervalo, essa configuração está perdendo dinheiro".
+# A pausa conta a partir da última operação avaliada, então ela se solta sozinha
+# — se dependesse de uma nova operação para reavaliar, ficaria travada para sempre.
+def circuit_breaker(hist_, coorte, n, minutos_pausa, payout):
+    fech = [h for h in hist_ if h.get("coorte") == coorte
+            and not h.get("bloq") and h.get("res") in ("ganhou", "perdeu")]
+    if len(fech) < n:
+        return False, "", 0, 0
+    ult = fech[-n:]
+    w = sum(1 for h in ult if h["res"] == "ganhou")
+    _, _, hi = wilson_ci(w, len(ult))
+    if hi >= breakeven(payout):
+        return False, "", len(ult), w
+    ts = max(pd.Timestamp(h["ts"]) for h in ult)
+    solta = br(ts) + timedelta(minutes=minutos_pausa)
+    if br(now) >= solta:
+        return False, "", len(ult), w
+    return True, (f"{w}/{len(ult)} nas últimas operações desta configuração — "
+                  f"teto do intervalo em {hi*100:.1f}%, abaixo do breakeven de "
+                  f"{breakeven(payout)*100:.1f}%. Volta às "
+                  f"{solta.strftime('%H:%M')}."), len(ult), w
+
+
+_cb_ativo, _cb_msg, _cb_n_aval, _cb_w = (
+    circuit_breaker(hist_load(), COORTE, int(cb_n), int(cb_pausa), PAYOUT)
+    if cb_on else (False, "", 0, 0))
+
+operando = sistema_on and dentro_janela and not _bloqueio_perda and not _cb_ativo
 
 entries = list(agg.values()) if operando else []
 minf = {"FRACA": 1, "MÉDIA": 2, "FORTE": 3}[min_force]
@@ -1572,6 +1740,31 @@ entries = [e for e in entries if FORCE_ORDER[e["force"]] >= minf]
 if only_conf:
     entries = [e for e in entries if len(e["strats"]) > 1]
 entries.sort(key=lambda e: (len(e["strats"]), FORCE_ORDER[e["force"]], e["score"]), reverse=True)
+
+
+# ---- filtros de qualidade: separam, não descartam ----
+# O sinal reprovado sai da tela (você não vai operá-lo) mas continua indo para o
+# histórico com o motivo do corte, e é apurado igual. É o que transforma cada
+# filtro em experimento medido em vez de palpite: no fim dá para comparar a taxa
+# de acerto do que passou com a do que foi cortado. Se o cortado acertava MAIS,
+# o filtro está custando dinheiro — e você só descobre isso guardando o cortado.
+def motivo_corte(e):
+    q = qualidade.get(e["a"]["name"], {})
+    if noticia_ativa:
+        return "noticia"
+    if f_corpo_on and q.get("corpo") is not None and q["corpo"] < float(f_corpo_min):
+        return "corpo"
+    if f_atr_on and q.get("atrp") is not None and not (
+            float(f_atr_lo) <= q["atrp"] <= float(f_atr_hi)):
+        return "atr"
+    return None
+
+
+for _e in entries:
+    _e["bloq"] = motivo_corte(_e)
+entries_todos = entries
+entries = [e for e in entries_todos if not e["bloq"]]
+cortados = [e for e in entries_todos if e["bloq"]]
 
 
 # ============================== DESEMPENHO ==============================
@@ -1769,6 +1962,8 @@ def hist_df(h):
         "motivo": r.get("motivo", ""),
         "atraso_min": r.get("lag", ""), "fonte": r.get("src", ""),
         "payout": r.get("payout", ""),
+        "cortado_por": r.get("bloq") or "",
+        "corpo_pct": r.get("q_corpo", ""), "atr_percentil": r.get("q_atrp", ""),
     } for r in sorted(h, key=lambda x: x["ts"], reverse=True)])
 
 
@@ -1803,8 +1998,14 @@ def record_and_resolve(entries, data, minutes, na_janela):
                          # número agregado deixava de responder qualquer coisa.
                          "cfg_forca": min_force, "cfg_conf": bool(only_conf),
                          "cfg_mkt": mercado,
-                         "coorte": f"{minutes}m·{min_force}"
-                                   f"{'·2+' if only_conf else ''}·{mercado}",
+                         "coorte": COORTE,
+                         # motivo do corte (None = passou nos filtros e foi
+                         # exibido como entrada) + as métricas que decidiram.
+                         # Guardar as métricas mesmo com o filtro desligado é o
+                         # que permite calibrar o limiar depois com dado real.
+                         "bloq": e.get("bloq"),
+                         "q_corpo": qualidade.get(nome, {}).get("corpo"),
+                         "q_atrp": qualidade.get(nome, {}).get("atrp"),
                          # instrumentação: permite medir depois se atraso derruba o acerto
                          "lag": (round(float(lag_ativo[nome]), 2)
                                  if nome in lag_ativo else None),
@@ -1837,7 +2038,13 @@ def record_and_resolve(entries, data, minutes, na_janela):
     return hist
 
 
-hist = record_and_resolve(entries, data, minutes, window_open)
+# Grava TUDO (inclusive o que os filtros cortaram) para que o cortado também
+# seja apurado. `hist` — a lista que alimenta Resultado, Desempenho e Histórico —
+# vê só o que virou entrada de verdade; misturar o cortado ali inflaria a
+# amostra com operações que você nunca fez.
+hist_todos = record_and_resolve(entries_todos, data, minutes, window_open)
+hist = [h for h in hist_todos if not h.get("bloq")]
+hist_cortados = [h for h in hist_todos if h.get("bloq")]
 
 
 
@@ -1978,10 +2185,33 @@ with tab_sig:
     if err:
         st.caption(f"Twelve Data: {err}")
 
+    # Sem este aviso, um filtro ligado deixaria a tela vazia sem explicação e
+    # pareceria bug — foi exatamente assim que o gate de janela de entrada
+    # confundiu antes.
+    if noticia_ativa:
+        st.markdown(
+            f'<div class="win alert"><span class="pt"></span><div class="msg">'
+            f'<b>Janela de notícia — entradas suspensas</b><br>{noticia_rot}. '
+            f'Bloqueio de ±{int(f_news_min)} min. Os sinais que aparecerem agora '
+            f'continuam sendo gravados e apurados, marcados como cortados, para '
+            f'medir depois se evitar notícia realmente ajudou.</div></div>',
+            unsafe_allow_html=True)
+    elif cortados:
+        _q = {}
+        for _e in cortados:
+            _q[_e["bloq"]] = _q.get(_e["bloq"], 0) + 1
+        _rot = {"corpo": "vela sem corpo", "atr": "volatilidade fora da faixa",
+                "noticia": "janela de notícia"}
+        _txt = ", ".join(f"{v} por {_rot.get(k, k)}" for k, v in sorted(_q.items()))
+        st.caption(f"{len(cortados)} sinal(is) cortado(s) pelos filtros de "
+                   f"qualidade: {_txt}. Continuam no histórico para medição.")
+
     if not operando:
         if _bloqueio_perda:
             _motivo = (f"Limite de perda do dia atingido: {_perda_hoje:.2f} de "
                        f"−{abs(lim_val):.2f}. O sistema para até amanhã.")
+        elif _cb_ativo:
+            _motivo = f"Freio automático disparado. {_cb_msg}"
         elif not sistema_on:
             _motivo = "Sistema desligado."
         else:
@@ -2157,7 +2387,9 @@ with tab_res:
                 for h in hist:
                     if not h.get("stake") and h["res"] in ("ganhou", "perdeu", "empate"):
                         h["stake"] = float(stake)
-                hist_save(hist)
+                # salva a lista COMPLETA: `hist` é uma visão sem os cortados,
+                # e gravá-la apagaria o histórico dos filtros do disco.
+                hist_save(hist_todos)
                 st.rerun()
         with _c2:
             st.caption("Preenche o valor só onde está faltando. Operações que já têm "
@@ -2944,6 +3176,64 @@ with tab_hist:
                        "intervalos vão ficar largos e o veredito, não conclusivo — isso é "
                        "o esperado, não um defeito.")
 
+        # ---- os filtros de qualidade estão ajudando? ----
+        # A comparação que interessa não é "quanto acertei", é "o que cortei
+        # acertava menos do que o que passou?". Se o cortado acerta MAIS, o
+        # filtro está tirando dinheiro do seu bolso, e sem esta tabela isso
+        # ficaria invisível — o corte simplesmente não apareceria em lugar nenhum.
+        _cortes = [h for h in hist_cortados if h.get("bloq")]
+        if _cortes:
+            _ROT = {"corpo": "cortado · vela sem corpo",
+                    "atr": "cortado · volatilidade fora da faixa",
+                    "noticia": "cortado · janela de notícia"}
+            _por = {}
+            for h in _cortes:
+                _por.setdefault(h["bloq"], []).append(h)
+            linhas = linha_ic("Passou nos filtros", "operado", vis, payout_do(vis))
+            for k, v in sorted(_por.items()):
+                linhas += linha_ic(_ROT.get(k, k), "não operado", v, payout_do(v))
+            st.markdown('<div class="sect">Os filtros estão ajudando?</div>',
+                        unsafe_allow_html=True)
+            st.markdown(f'<table class="tbl"><tr><th>Recorte</th><th>Tipo</th><th>Ops</th>'
+                        f'<th>Acerto</th><th>IC95</th><th>Veredito</th></tr>{linhas}</table>',
+                        unsafe_allow_html=True)
+            st.caption("Leia a comparação, não o veredito de cada linha: o filtro só "
+                       "vale a pena se o que ele cortou acertar MENOS do que o que "
+                       "passou. Se acertar mais, desligue-o — ele está custando "
+                       "operações boas. As linhas de corte não entram no resultado "
+                       "financeiro, porque essas entradas não foram feitas.")
+
+        # ---- calibração: qual limiar faria sentido? ----
+        # Funciona mesmo com os filtros DESLIGADOS, porque as métricas da vela
+        # são gravadas em todo sinal. É o jeito de escolher o corte olhando o
+        # seu próprio histórico em vez de chutar um número redondo.
+        def faixas(chave, rotulo, cortes, sufixo="%"):
+            base = [h for h in hist_todos
+                    if isinstance(h.get(chave), (int, float))
+                    and h.get("res") in ("ganhou", "perdeu")]
+            if len(base) < 20:
+                return ""
+            linhas_ = ""
+            for lo, hi in zip(cortes[:-1], cortes[1:]):
+                grupo = [h for h in base if lo <= h[chave] < hi]
+                linhas_ += linha_ic(f"{lo:.0f}–{hi:.0f}{sufixo}", rotulo, grupo,
+                                    payout_do(grupo) if grupo else PAYOUT)
+            return linhas_
+
+        _cal = (faixas("q_corpo", "corpo da vela", [0, 20, 35, 50, 70, 101])
+                + faixas("q_atrp", "percentil de ATR", [0, 20, 40, 60, 80, 101]))
+        if _cal:
+            st.markdown('<div class="sect">Calibração dos limiares</div>',
+                        unsafe_allow_html=True)
+            st.markdown(f'<table class="tbl"><tr><th>Faixa</th><th>Métrica</th><th>Ops</th>'
+                        f'<th>Acerto</th><th>IC95</th><th>Veredito</th></tr>{_cal}</table>',
+                        unsafe_allow_html=True)
+            st.caption("Cuidado com esta tabela: são 10 faixas testadas de uma vez, "
+                       "então alguma vai parecer boa por acaso. Só mude um limiar se "
+                       "a faixa ruim for consistentemente ruim ao longo de semanas — "
+                       "escolher a melhor célula de hoje é como acertar o alvo depois "
+                       "de atirar.")
+
         # Agrupado por dia, com subtotal em cada cabeçalho. A taxa agregada
         # esconde dias sistematicamente ruins; separando, isso fica visível.
         VERD = {"ganhou": ("v-good", "ganhou"), "perdeu": ("v-bad", "perdeu"),
@@ -3056,7 +3346,7 @@ with tab_hist:
             if k in _mot and (h.get("motivo") or "") != (_mot[k] or ""):
                 h["motivo"] = _mot[k] or ""; _mudou = True
         if _mudou:
-            hist_save(hist)
+            hist_save(hist_todos)          # ver comentário na aba Resultado
             st.rerun()
 
         _mots = {}
@@ -3094,7 +3384,9 @@ with tab_hist:
     st.markdown('<div class="sect">Backup e importação</div>', unsafe_allow_html=True)
     b1, b2, b3 = st.columns([1, 1.4, 1])
     with b1:
-        df_h = hist_df(hist)
+        # Exporta TUDO, inclusive o que os filtros cortaram (coluna cortado_por).
+        # O backup precisa poder reconstruir o histórico inteiro.
+        df_h = hist_df(hist_todos)
         st.download_button("Baixar histórico (CSV)",
                            data=(df_h.to_csv(index=False).encode("utf-8-sig") if not df_h.empty
                                  else "sem dados".encode()),
