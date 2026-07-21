@@ -2301,8 +2301,30 @@ if USAR_GRADE:
     fechados_corretora = [a["name"] for a in scan_list
                           if not aberto_na_corretora(a["name"], now, GRADE_CORRETORA)]
     scan_list = [a for a in scan_list if a["name"] not in fechados_corretora]
+
+# ANÁLISE HISTÓRICA usa o universo INTEIRO, não o que está aberto agora.
+# BUG CORRIGIDO: o backtest da aba Desempenho rodava sobre scan_list, e desde
+# que a grade da corretora passou a esvaziar essa lista fora do horário, a aba
+# inteira zerava — 62 mil operações viravam nada às 15h31. São perguntas
+# diferentes: "posso operar isto agora?" é scan_list; "esta estratégia teve
+# vantagem no último mês?" não depende de a corretora estar aberta neste
+# instante. O filtro de mercado (forex/cripto) continua valendo, porque aí a
+# pergunta é sobre o que você quer analisar.
+analise_list = _universo
+
+# BUSCAR DADOS ≠ GERAR SINAL, e confundir os dois deixava operações penduradas.
+# Uma entrada aberta às 15:25 expira às 15:30 — mas às 15:30 o ativo já fechou
+# na corretora e saiu de scan_list; sem os dados dele, record_and_resolve não
+# apura e o sinal fica "aguardando" para sempre. Isso aconteceria justamente no
+# fim de toda sessão, que é quando há entradas em aberto.
+# Então: busca dados de quem pode gerar sinal MAIS de quem tem sinal pendente.
+_pendentes = {h["asset"] for h in hist_load()
+              if h.get("res") is None and h.get("tf") == minutes}
+_nomes_scan = {a["name"] for a in scan_list}
+fetch_list = scan_list + [a for a in _universo
+                          if a["name"] in _pendentes and a["name"] not in _nomes_scan]
 t_scan0 = time.perf_counter()
-data, fetch_s = get_data_live(scan_list, interval, minutes)
+data, fetch_s = get_data_live(fetch_list, interval, minutes)
 if not fetch_s:
     fetch_s = st.session_state.get("last_fetch_s", 0.0)
 
@@ -2578,11 +2600,11 @@ def run_perf():
     # que não significavam nada. Todo o resto do app usa horário de Brasília;
     # esta coluna era a exceção que ninguém tinha notado.
     today = br(now).date()
-    dhist = get_data_hist(scan_list, interval)      # janela grande, cache de 10 min
+    dhist = get_data_hist(analise_list, interval)   # universo inteiro: ver nota acima
     out = {n: {"hoje": [0, 0], "per": [0, 0]} for n in STRATEGIES}
     horas = {h: [0, 0] for h in range(24)}          # hora BRT -> [ops, acertos]
     forcas = {"FORTE": [0, 0], "MEDIA": [0, 0], "FRACA": [0, 0]}   # força -> [ops, acertos]
-    for a in scan_list:
+    for a in analise_list:
         df = dhist.get(a["name"])
         if df is None or len(df) < 80:
             continue
@@ -2623,7 +2645,7 @@ def get_perf(calcular=False):
     if calcular:
         t0 = time.perf_counter()
         st.session_state["perf_cache"] = {
-            "chave": (interval, len(scan_list), tuple(sorted(sel_strats))),
+            "chave": (interval, len(analise_list), tuple(sorted(sel_strats))),
             "dados": run_perf(),
             "quando": datetime.now(timezone.utc), "levou": time.perf_counter() - t0}
     return st.session_state.get("perf_cache")      # None = ainda não calculado
@@ -3684,7 +3706,7 @@ with tab_perf:
     IDADE_MAX = 5 * 60          # acima disso o recorte "Hoje" já não descreve o dia
     _idade = ((datetime.now(timezone.utc) - cp["quando"]).total_seconds()
               if cp else 0.0)
-    _mudou_ctx = bool(cp) and cp["chave"] != (interval, len(scan_list),
+    _mudou_ctx = bool(cp) and cp["chave"] != (interval, len(analise_list),
                                               tuple(sorted(sel_strats)))
     _velho = bool(cp) and _idade > IDADE_MAX
     _alerta = _mudou_ctx or _velho
