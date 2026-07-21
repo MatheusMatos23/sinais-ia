@@ -1538,7 +1538,12 @@ def run_perf():
     mais cara daqui e depende só do ativo, não da estratégia. Com o laço na ordem
     inversa ela rodava 11× por ativo — 99 vezes no total em vez de 9.
     """
-    today = now.date()
+    # BUG CORRIGIDO: `now.date()` é a data em UTC, e o índice das velas também.
+    # Depois das 21h de Brasília já é o dia seguinte em UTC, então "Hoje" passava
+    # a conter só as velas desde a meia-noite UTC — 4 ou 5 operações, com taxas
+    # que não significavam nada. Todo o resto do app usa horário de Brasília;
+    # esta coluna era a exceção que ninguém tinha notado.
+    today = br(now).date()
     dhist = get_data_hist(scan_list, interval)      # janela grande, cache de 10 min
     out = {n: {"hoje": [0, 0], "per": [0, 0]} for n in STRATEGIES}
     horas = {h: [0, 0] for h in range(24)}          # hora BRT -> [ops, acertos]
@@ -1547,7 +1552,8 @@ def run_perf():
         if df is None or len(df) < 80:
             continue
         d = add_indicators(df)                      # uma vez por ativo
-        m = d.index.date == today                   # máscara do dia, idem
+        # o índice está em UTC: desloca para Brasília antes de comparar a data
+        m = (d.index - pd.Timedelta(hours=3)).date == today
         tem_hoje = m.any()
         d_hoje = d[m] if tem_hoje else None
         # Hora de Brasília de cada vela: o índice está em UTC.
