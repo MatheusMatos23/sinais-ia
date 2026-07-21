@@ -133,6 +133,21 @@ def dhm(ts):
     return br(ts).strftime("%d/%m %H:%M")
 
 
+def hm_exp(ts, minutos):
+    """
+    "09:05 → 09:10": abertura da vela e expiração da opção.
+
+    Existe por causa de uma confusão que custou uma investigação inteira. A
+    corretora nomeia a vela pela EXPIRAÇÃO (a de 09:35 aparece lá como 09:40);
+    o app nomeia pela ABERTURA. Ver "09:05" nos dois lugares e supor que é a
+    mesma vela leva a comparar velas diferentes e concluir que o app errou o
+    resultado — foi exatamente o que aconteceu. Mostrando os dois horários, a
+    ambiguidade acaba na origem.
+    """
+    t = br(ts)
+    return f'{t.strftime("%H:%M")} → {(t + timedelta(minutes=minutos)).strftime("%H:%M")}'
+
+
 def num_br(txt):
     """
     Número no padrão brasileiro: vírgula decimal, ponto de milhar.
@@ -2221,7 +2236,8 @@ def hist_df(h):
         "ativo": r["asset"], "direcao": r["dir"], "forca": FL.get(r["force"], r["force"]),
         "estrategias": "+".join(r["strats"]), "timeframe_min": r.get("tf", ""),
         "resultado": r["res"] or "aguardando",
-        "executei": bool(r.get("exec", False)), "coorte": r.get("coorte", ""),
+        "executei": bool(r.get("exec", False)), "prontidao": r.get("prontidao", ""),
+        "coorte": r.get("coorte", ""),
         "motivo": r.get("motivo", ""),
         "atraso_min": r.get("lag", ""), "fonte": r.get("src", ""),
         "payout": r.get("payout", ""),
@@ -2425,7 +2441,7 @@ def hero_html(e, cvela, tag_destaque="Melhor entrada"):
       <div class="hero-side">
         <div class="h-row"><span class="h-k">Preço atual</span>
           <span class="h-v mono">{fmt_price(e["a"]["name"], e.get("px"))}</span></div>
-        <div class="h-row"><span class="h-k">Entrada na vela</span>
+        <div class="h-row"><span class="h-k">Vela · expira</span>
           <span class="h-v mono">{cvela}</span></div>
         <div class="h-row"><span class="h-k">Estratégias</span>{chips(e, big=True)}</div>
       </div></div>"""
@@ -2449,12 +2465,16 @@ def card_html(e):
 
 # ============================== ABA SINAIS ==============================
 with tab_sig:
-    cvela = hm(pd.Timestamp(candle_key(minutes) * minutes * 60, unit="s"))
+    _ts_vela = pd.Timestamp(candle_key(minutes) * minutes * 60, unit="s")
+    cvela = hm(_ts_vela)
+    # abertura → expiração: o mesmo par de horários que a corretora mostra,
+    # para não haver dúvida sobre qual vela é qual.
+    cvela_exp = hm_exp(_ts_vela, minutes)
 
     # --- estado da janela de entrada ---
     if window_open:
         st.markdown(f'<div class="win ok"><span class="pt"></span><div class="msg">'
-                    f'<b>Entrada válida agora</b> — vela das {cvela}. '
+                    f'<b>Entrada válida agora</b> — vela {cvela_exp}. '
                     f'Restam {int(ENTRY_WINDOW - _age)}s desta janela.</div></div>', unsafe_allow_html=True)
     else:
         mm, ss = divmod(int(secs_to_next), 60)
@@ -2624,7 +2644,7 @@ with tab_sig:
         novo_sinal = st.session_state.get("ultimo_sinal") != _chave
         st.session_state["ultimo_sinal"] = _chave
         _cls = f'hero{dim}{" novo" if novo_sinal else ""} '
-        st.markdown(hero_html(_destaque, cvela,
+        st.markdown(hero_html(_destaque, cvela_exp,
                               "Entrada selecionada" if _manual else "Melhor entrada"
                               ).replace('class="hero ', f'class="{_cls}'),
                     unsafe_allow_html=True)
@@ -2689,7 +2709,7 @@ with tab_sig:
         _obs = (" · os apagados saíram da varredura depois de gravados "
                 "(dado vencido, fonte trocada ou filtro alterado)" if _sumidos else "")
         st.markdown(
-            f'<div class="regbar"><span class="k">Registrado na vela {cvela}</span>'
+            f'<div class="regbar"><span class="k">Registrado na vela {cvela_exp}</span>'
             f'{_linhas}<span class="obs">{_obs}</span></div>', unsafe_allow_html=True)
     else:
         # Estado vazio compacto. Antes era um cartão da mesma altura do sinal
@@ -3565,6 +3585,41 @@ with tab_hist:
                        "intervalos vão ficar largos e o veredito, não conclusivo — isso é "
                        "o esperado, não um defeito.")
 
+        # ---- efeito do SEU atraso de execução ----
+        # A vantagem que a estratégia mede está no movimento abertura->fechamento.
+        # Comprando no meio da vela você já pagou o que o preço andou e aposta só
+        # no que sobrou; sem sinal novo apontando para esse pedaço, ele tende a
+        # se comportar como moeda ao ar. E 50% fica ABAIXO do breakeven — ou seja,
+        # a expectativa é que atraso não piore um pouco, e sim jogue a operação
+        # para o lado errado da linha. Aqui isso deixa de ser teoria minha.
+        _ORD_PRO = ["na virada", "até 30s", "até 1min", "mais de 1min"]
+        _exec_pro = [h for h in vis if h.get("exec") and h.get("prontidao")
+                     and h["res"] in ("ganhou", "perdeu")]
+        if _exec_pro:
+            _por_pro = {}
+            for h in _exec_pro:
+                _por_pro.setdefault(h["prontidao"], []).append(h)
+            linhas = ""
+            for k in _ORD_PRO:
+                v = _por_pro.get(k)
+                if v:
+                    linhas += linha_ic(k, "entrada", v, payout_do(v))
+            _sem = [h for h in vis if h.get("exec") and not h.get("prontidao")
+                    and h["res"] in ("ganhou", "perdeu")]
+            st.markdown('<div class="sect">Efeito do seu atraso de execução</div>',
+                        unsafe_allow_html=True)
+            st.markdown(f'<table class="tbl"><tr><th>Quando entrei</th><th>Tipo</th>'
+                        f'<th>Ops</th><th>Acerto</th><th>IC95</th><th>Veredito</th>'
+                        f'</tr>{linhas}</table>', unsafe_allow_html=True)
+            st.caption(
+                "Comprar no meio da vela não é a mesma operação que comprar na "
+                "virada: o preço já andou e você aposta só no que sobra. A "
+                "expectativa é que as linhas de baixo caiam na direção de 50%, que "
+                "está abaixo do seu breakeven — mas é expectativa minha, e o "
+                "número aqui é que decide."
+                + (f" {len(_sem)} operação(ões) executada(s) ainda sem esse campo "
+                   f"preenchido ficam de fora." if _sem else ""))
+
         # ---- os filtros de qualidade estão ajudando? ----
         # A comparação que interessa não é "quanto acertei", é "o que cortei
         # acertava menos do que o que passou?". Se o cortado acerta MAIS, o
@@ -3715,11 +3770,20 @@ with tab_hist:
         _recentes = sorted(vis, key=lambda x: x["ts"], reverse=True)[:25]
         MOTIVOS = ["", "perdi a janela", "não gostei do setup",
                    "exposição concentrada", "limite/saldo", "outro"]
+        # Prontidão da entrada. A vantagem que a estratégia mede está no
+        # movimento ABERTURA -> FECHAMENTO. Comprando no meio da vela você paga
+        # o que o preço já andou e aposta só no que sobrou — outra operação,
+        # com outro ponto de partida. Sem separar as duas, a taxa agregada
+        # mistura entrada limpa com entrada atrasada e não descreve nenhuma.
+        PRONTIDAO = ["", "na virada", "até 30s", "até 1min", "mais de 1min"]
         _tab = pd.DataFrame([{
             "id": f'{h["asset"]}|{h["dir"]}|{h.get("ck")}|{h.get("tf")}',
             "Executei": bool(h.get("exec", False)),
+            "Quando entrei": h.get("prontidao", ""),
             "Se não, por quê": h.get("motivo", ""),
-            "Quando": dhm(h["ts"]), "Ativo": h["asset"], "Direção": h["dir"],
+            "Vela · expira": (br(h["ts"]).strftime("%d/%m ")
+                              + hm_exp(h["ts"], h.get("tf") or minutes)),
+            "Ativo": h["asset"], "Direção": h["dir"],
             "TF": f'{h.get("tf", "—")}m',
             "Estratégias": "+".join(h["strats"]),
             "Resultado": h["res"] or "aguardando",
@@ -3731,21 +3795,31 @@ with tab_hist:
                 "Executei": st.column_config.CheckboxColumn(
                     "Executei", help="Marque as entradas que você realmente operou.",
                     width="small"),
+                "Quando entrei": st.column_config.SelectboxColumn(
+                    "Quando entrei", options=PRONTIDAO, width="small",
+                    help="Em que momento da vela você comprou. Entrada atrasada é "
+                         "outra operação: o preço já andou e você aposta só no que "
+                         "sobra. Preencher aqui é o que permite medir quanto isso "
+                         "custa — o painel fica logo abaixo."),
                 "Se não, por quê": st.column_config.SelectboxColumn(
                     "Se não, por quê", options=MOTIVOS, width="medium",
                     help="Saber o motivo revela se o atraso do app está custando "
                          "entradas, ou se a filtragem é sua."),
             },
-            disabled=["Quando", "Ativo", "Direção", "TF", "Estratégias", "Resultado"])
+            disabled=["Vela · expira", "Ativo", "Direção", "TF", "Estratégias",
+                      "Resultado"])
         _mudou = False
         _mapa = dict(zip(_ed["id"], _ed["Executei"]))
         _mot = dict(zip(_ed["id"], _ed["Se não, por quê"]))
+        _pro = dict(zip(_ed["id"], _ed["Quando entrei"]))
         for h in hist:
             k = f'{h["asset"]}|{h["dir"]}|{h.get("ck")}|{h.get("tf")}'
             if k in _mapa and bool(h.get("exec", False)) != bool(_mapa[k]):
                 h["exec"] = bool(_mapa[k]); _mudou = True
             if k in _mot and (h.get("motivo") or "") != (_mot[k] or ""):
                 h["motivo"] = _mot[k] or ""; _mudou = True
+            if k in _pro and (h.get("prontidao") or "") != (_pro[k] or ""):
+                h["prontidao"] = _pro[k] or ""; _mudou = True
         if _mudou:
             hist_save(hist_todos)          # ver comentário na aba Resultado
             st.rerun()
