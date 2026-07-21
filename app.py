@@ -98,6 +98,24 @@ ASSETS = [
     {"name": "BTC/USD", "yf": "BTC-USD", "cur": [], "type": "crypto", "voz": "Bitcoin"},
     {"name": "ETH/USD", "yf": "ETH-USD", "cur": [], "type": "crypto", "voz": "Ethereum"},
 ]
+# Cronograma REAL da Bullex, lido em Informações -> Condições de Negociação de
+# cada ativo (a corretora já publica em UTC-3, o mesmo fuso de Brasília).
+# Não é estimativa: cada linha veio da tela da corretora em 21/07/2026.
+# Reconferir de tempos em tempos — corretora muda grade sem avisar, e o campo
+# em Ajustes permite sobrescrever qualquer um destes.
+GRADE_BULLEX_TXT = {
+    # os majors com sessão dupla e reabertura no domingo à noite
+    "EUR/USD": "seg-qui 00:00-15:30, 22:00-23:59; sex 00:00-15:30; dom 22:00-23:59",
+    "GBP/USD": "seg-qui 00:00-15:30, 22:00-23:59; sex 00:00-15:30; dom 22:00-23:59",
+    "USD/JPY": "seg-qui 00:00-15:30, 22:00-23:59; sex 00:00-15:30; dom 22:00-23:59",
+    "NZD/USD": "seg-qui 00:00-15:30, 22:00-23:59; sex 00:00-15:30; dom 22:00-23:59",
+    "EUR/JPY": "seg-qui 00:00-15:30, 22:00-23:59; sex 00:00-15:30; dom 22:00-23:59",
+    # estes fecham no fim de semana inteiro e têm janela única
+    "AUD/USD": "seg-sex 00:00-14:00",
+    "USD/CAD": "seg-sex 03:00-15:00",
+    "USD/CHF": "seg-sex 10:00-14:00",
+    # cripto negocia 24/7 na corretora: sem grade = sem restrição
+}
 SESSIONS = {"Sydney": (21, 6), "Tóquio": (23, 8), "Londres": (7, 16), "Nova York": (12, 21)}
 CUR_SESS = {"AUD": "Sydney", "NZD": "Sydney", "JPY": "Tóquio", "EUR": "Londres",
             "GBP": "Londres", "CHF": "Londres", "USD": "Nova York", "CAD": "Nova York"}
@@ -1604,6 +1622,8 @@ CFG_PADRAO = {
     # sinal saía em ativo que você não tinha como operar.
     # Formato: {"EUR/USD": [["09:00","17:30"]], ...} em horário de Brasília.
     "horarios_ativo": {}, "usar_horarios_ativo": False,
+    # "bullex" = grade real da corretora · "sessao" = sessões do interbancário
+    "modo_horario": "bullex",
 }
 
 
@@ -2023,15 +2043,29 @@ with tab_cfg:
         st.caption("A pastilha *Ao vivo / Pausado* fica no cabeçalho, à direita.")
         every = st.slider("Intervalo (s)", 10, 60, int(CFG.get("intervalo", 15)),
                           step=5, disabled=not auto_on)
-    st.markdown("**Horário de negociação na corretora** — a grade do mercado "
-                "interbancário (Londres, Nova York) não é a mesma da corretora de "
-                "binárias. Cadastre aqui o horário que a Bullex realmente abre cada "
-                "ativo e o app para de sinalizar o que você não tem como operar.")
-    usar_hor_ativo = st.toggle("Respeitar o horário da corretora por ativo",
-                               value=CFG.get("usar_horarios_ativo", False),
-                               help="Ativo sem horário cadastrado continua seguindo o "
-                                    "critério de sessão de mercado. O app nunca fecha "
-                                    "o que você não informou.")
+    st.markdown("**Horário de negociação** — qual calendário o app respeita para "
+                "decidir se um ativo pode gerar entrada.")
+    _MODOS = {
+        "bullex": "Horário da Bullex (grade real da corretora)",
+        "sessao": "Sessões do mercado forex (padrão)",
+    }
+    modo_horario = st.radio(
+        "Calendário", list(_MODOS), format_func=lambda k: _MODOS[k],
+        index=0 if CFG.get("modo_horario", "bullex") == "bullex" else 1,
+        label_visibility="collapsed",
+        help="A grade da corretora é a que importa para executar: de nada adianta "
+             "um sinal num ativo cujo botão não existe na sua tela. As sessões do "
+             "interbancário dizem quando há liquidez — útil para estudo, mas não "
+             "corresponde ao que a Bullex abre e fecha.")
+    usar_hor_ativo = modo_horario == "bullex"
+    if usar_hor_ativo:
+        st.caption("Grade já preenchida com o que está publicado em **Informações → "
+                   "Condições de Negociação** de cada ativo na Bullex (lido em "
+                   "21/07/2026). Corretora muda grade sem avisar — se notar "
+                   "divergência, corrija no campo do ativo abaixo.")
+    else:
+        st.caption("Usando as sessões Sydney/Tóquio/Londres/Nova York. O app pode "
+                   "sinalizar ativos que a Bullex tem fechados neste horário.")
     st.caption(
         "Copie de **Informações → Condições de Negociação** no ativo, na própria "
         "corretora (o cronograma dela já vem em UTC-3, o mesmo de Brasília). "
@@ -2050,7 +2084,9 @@ with tab_cfg:
             _txt_ini = ", ".join(f"{p[0]}-{p[1]}" for p in _guard
                                  if isinstance(p, (list, tuple)) and len(p) == 2)
         else:
-            _txt_ini = ""
+            # nunca preenchido: começa com a grade real da corretora, para você
+            # não precisar digitar oito cronogramas na mão
+            _txt_ini = GRADE_BULLEX_TXT.get(a["name"], "")
         with (hc1 if i % 2 == 0 else hc2):
             _v = st.text_input(
                 a["name"], value=_txt_ini, key=f"hor_{a['name']}",
@@ -2092,6 +2128,20 @@ with tab_cfg:
                                 help="0 = usar o payout padrão")
             if v:
                 _pay_ovr[a["name"]] = v / 100.0
+    # Payout baixo não é "um pouco pior": ele move o breakeven para um patamar
+    # que nenhuma estratégia medida aqui alcança. Vale gritar, não sussurrar.
+    _inviaveis = {n: p for n, p in _pay_ovr.items() if 100 / (1 + p) > 60}
+    if _inviaveis:
+        _l = " · ".join(f"<b>{n}</b> paga {pct(p*100, 0)}, precisaria de "
+                        f"{pct(100/(1+p), 1)} de acerto"
+                        for n, p in _inviaveis.items())
+        st.markdown(
+            f'<div class="win alert"><span class="pt"></span><div class="msg">'
+            f'<b>Payout inviável.</b> {_l}. A melhor taxa já medida neste sistema, '
+            f'em 62 mil operações de backtest, foi de ~54%. Operar esses ativos é '
+            f'perda garantida no longo prazo — não é questão de estratégia, é '
+            f'aritmética. Considere removê-los da varredura em <i>Mercados</i> ou '
+            f'simplesmente não operá-los.</div></div>', unsafe_allow_html=True)
     st.markdown("**Sessões do mercado — horário de Brasília**")
     ativas = set(active_sessions(datetime.now(timezone.utc)))
     BADGE = '<span class="verd v-good">ativa</span>'
@@ -2119,6 +2169,7 @@ cfg_save({
     "f_news_txt": str(f_news_txt), "cb_on": bool(cb_on), "cb_n": int(cb_n),
     "radar": bool(radar_on), "premium": bool(prem_on),
     "horarios_ativo": _hor_novo, "usar_horarios_ativo": bool(usar_hor_ativo),
+    "modo_horario": modo_horario,
     "cb_pausa": int(cb_pausa),
 })
 
