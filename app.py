@@ -245,8 +245,18 @@ _td_spent = deque()          # timestamps dos créditos gastos (janela de 60 s)
 _td_day = [0, None]          # [créditos no dia, data UTC]
 
 
-def td_budget(n):
-    """Reserva n créditos se couber na janela de 60 s. True = pode buscar."""
+# Teto diário a partir do qual gastos SECUNDÁRIOS (radar) param. O radar é
+# conforto; o sinal é o produto. Sem esta linha o radar consumiria a cota do dia
+# e, na hora da entrada, não haveria crédito para buscar a vela — trocaríamos a
+# função principal por uma auxiliar sem ninguém perceber.
+TD_DIA_RESERVA = 420          # de 800: metade fica reservada para o sinal
+
+
+def td_budget(n, secundario=False):
+    """
+    Reserva n créditos se couber na janela de 60 s. True = pode buscar.
+    `secundario=True` (radar) respeita ainda o teto de reserva diária.
+    """
     now = time.time()
     today = datetime.now(timezone.utc).date()
     with _td_lock:
@@ -254,6 +264,8 @@ def td_budget(n):
             _td_spent.popleft()
         if _td_day[1] != today:
             _td_day[0], _td_day[1] = 0, today
+        if secundario and _td_day[0] + n > TD_DIA_RESERVA:
+            return False
         if len(_td_spent) + n > TD_LIMIT_MIN:
             return False
         for _ in range(n):
@@ -384,6 +396,88 @@ def crypto_fetch(nome, interval, candle):
         except Exception:
             continue
     return None, None
+
+
+# ====================== COTAÇÃO AGORA (para o radar) ======================
+# O radar precisa do preço NO MEIO da vela, e as velas fechadas não servem: a
+# Twelve Data não devolve a vela em formação (foi medindo isso que apareceu o
+# bug da vela atrasada). Aqui a busca é de preço pontual, não de vela.
+#
+# ORÇAMENTO: o radar só é consultado nos últimos segundos da vela e usa o mesmo
+# contador de créditos do resto do app. Se não houver crédito sobrando, ele
+# simplesmente não aparece — nunca tira crédito da busca que gera o sinal, que
+# é a que importa de verdade.
+def _preco_td(nomes):
+    """{ativo: preço} via endpoint /price. 1 crédito por símbolo."""
+    if not TD_KEY or not nomes:
+        return {}
+    if not td_budget(len(nomes), secundario=True):
+        return {}
+    import requests
+    try:
+        r = requests.get("https://api.twelvedata.com/price",
+                         params={"symbol": ",".join(nomes), "apikey": TD_KEY},
+                         timeout=6)
+        j = r.json()
+    except Exception:
+        return {}
+    out = {}
+    if isinstance(j, dict) and "price" in j and len(nomes) == 1:
+        try:
+            out[nomes[0]] = float(j["price"])
+        except (TypeError, ValueError):
+            pass
+        return out
+    if isinstance(j, dict):
+        for sym, blk in j.items():
+            if isinstance(blk, dict) and "price" in blk:
+                try:
+                    out[sym] = float(blk["price"])
+                except (TypeError, ValueError):
+                    continue
+    return out
+
+
+def _preco_cripto(nome):
+    """Preço spot da exchange. Sem chave e sem limite prático."""
+    m = CRYPTO_SYMS.get(nome)
+    if not m:
+        return None
+    import requests
+    try:
+        r = requests.get("https://api.binance.com/api/v3/ticker/price",
+                         params={"symbol": m["binance"]}, timeout=5)
+        if r.ok:
+            return float(r.json()["price"])
+    except Exception:
+        pass
+    try:
+        r = requests.get(f"https://api.exchange.coinbase.com/products/{m['coinbase']}/ticker",
+                         timeout=5)
+        if r.ok:
+            return float(r.json()["price"])
+    except Exception:
+        pass
+    return None
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def precos_agora(nomes_fx, nomes_cripto, _balde):
+    """
+    `_balde` é a chave da vela: UMA consulta por vela, não uma a cada rerun.
+    Com 3 consultas por vela o radar consumiria ~1.700 créditos/dia contra um
+    teto de 800 — ele acabaria comendo a cota do sinal. Com uma, são ~576/dia
+    no pior caso, e ainda assim o teto de reserva corta antes disso.
+    O preço fica com até 60s de idade dentro da janela do radar; para dizer
+    "olho nesse par" é suficiente, e o rodapé do painel avisa que é estimativa.
+    """
+    out = {}
+    out.update(_preco_td(list(nomes_fx)))
+    for n in nomes_cripto:
+        p = _preco_cripto(n)
+        if p is not None:
+            out[n] = p
+    return out
 
 
 def _dl(yf_symbol, interval, period):
@@ -1069,6 +1163,36 @@ body.foco [data-testid="stTabs"] [role="tabpanel"]{min-height:0}
   box-shadow:0 1px 0 rgba(255,255,255,.045) inset, 0 18px 30px -26px rgba(0,0,0,.95)}
 .hero{box-shadow:0 20px 34px -28px rgba(0,0,0,.95)}
 
+/* ---------- RADAR ----------
+   Linguagem visual PROPOSITALMENTE diferente da das entradas: borda tracejada
+   (nada no app usa tracejado), âmbar em vez do verde/vermelho de COMPRA/VENDA,
+   e o aviso "não é entrada" no cabeçalho. É um palpite sobre uma vela que ainda
+   não fechou; se em algum momento parecer uma entrada, o desenho falhou. */
+.radar{border:1px dashed rgba(217,164,65,.42);border-radius:var(--r);
+  background:linear-gradient(180deg,rgba(217,164,65,.05),transparent 70%);
+  padding:12px 16px 11px;margin:var(--gap-curto) 0 var(--gap-bloco)}
+.rd-hd{display:flex;align-items:center;gap:10px;margin-bottom:9px}
+.rd-t{font-size:.6rem;letter-spacing:.14em;text-transform:uppercase;
+  font-weight:700;color:var(--warn)}
+.rd-warn{font-size:.56rem;letter-spacing:.1em;text-transform:uppercase;font-weight:700;
+  color:var(--mut);border:1px solid var(--line2);border-radius:999px;padding:2px 8px}
+.rd-item{display:flex;align-items:center;gap:10px;padding:5px 0}
+.rd-nm{font-size:.82rem;font-weight:700;color:var(--ink2);min-width:88px}
+.rd-tag{font-size:.58rem;letter-spacing:.1em;text-transform:uppercase;
+  font-weight:700;color:var(--mut);min-width:56px}
+.rd-bar{flex:1;height:4px;border-radius:3px;background:rgba(255,255,255,.07);
+  overflow:hidden;min-width:60px;max-width:320px}
+.rd-bar i{display:block;height:100%;background:var(--warn)}
+.rd-pc{font-family:'Inter',sans-serif;font-variant-numeric:tabular-nums;
+  font-size:.78rem;font-weight:700;color:var(--warn);min-width:46px;text-align:right}
+.rd-st{font-size:.64rem;color:var(--mut);min-width:104px}
+.rd-ft{font-size:.64rem;color:var(--mut);line-height:1.55;margin-top:8px;
+  padding-top:8px;border-top:1px solid var(--line)}
+@media(max-width:900px){
+  .rd-bar{display:none}
+  .rd-st{min-width:0}
+}
+
 .empty{display:flex;align-items:center;gap:18px;background:var(--surf);
   border:1px solid var(--line);border-radius:var(--r2);padding:var(--pad-card)}
 .empty .e-ico{width:42px;height:42px;flex:none;border-radius:12px;display:flex;
@@ -1220,6 +1344,7 @@ CFG_PADRAO = {
     "f_atr_on": False, "f_atr_lo": 20, "f_atr_hi": 90,   # percentis de ATR aceitos
     "f_news_on": False, "f_news_min": 15, "f_news_txt": "",
     "cb_on": False, "cb_n": 30, "cb_pausa": 60,
+    "radar": False,
 }
 
 
@@ -1469,6 +1594,13 @@ with tab_cfg:
                               value=CFG.get("so_confluencia", False))
         show_closed = st.toggle("Incluir pares fora de sessão",
                                 value=CFG.get("fora_sessao", False))
+        radar_on = st.toggle("Radar de candidatos (60s antes da virada)",
+                             value=CFG.get("radar", False),
+                             help="Mostra quais pares estão perto de disparar, para "
+                                  "você já deixar o ativo aberto na corretora. NÃO é "
+                                  "entrada e nunca vai para o histórico — a vela ainda "
+                                  "pode virar. Consome créditos da Twelve Data, com "
+                                  "reserva garantida para o sinal.")
 
         # ---- filtros de qualidade -------------------------------------------
         # Todos são MEDIDOS: o sinal reprovado continua sendo gravado e apurado,
@@ -1617,6 +1749,7 @@ cfg_save({
     "f_atr_on": bool(f_atr_on), "f_atr_lo": int(f_atr_lo), "f_atr_hi": int(f_atr_hi),
     "f_news_on": bool(f_news_on), "f_news_min": int(f_news_min),
     "f_news_txt": str(f_news_txt), "cb_on": bool(cb_on), "cb_n": int(cb_n),
+    "radar": bool(radar_on),
     "cb_pausa": int(cb_pausa),
 })
 
@@ -1761,6 +1894,7 @@ bloqueados = set(sem_vela)
 # ============================== SCANNER ==============================
 agg = {}
 qualidade = {}                       # ativo -> métricas da vela de sinal
+fechadas_por_ativo = {}              # ativo -> velas fechadas (reuso do radar)
 for a in scan_list:
     if a["name"] in bloqueados:        # dado vencido: não vira entrada
         continue
@@ -1797,6 +1931,9 @@ for a in scan_list:
                 if len(_serie_atr) >= 30 and math.isfinite(float(_u["atr"])) else None)
     qualidade[a["name"]] = {"corpo": round(_corpo_pct, 1),
                             "atrp": None if _atr_pct is None else round(_atr_pct, 1)}
+    # Guardado para o radar reaproveitar: são as MESMAS velas fechadas já
+    # buscadas, então o radar não custa requisição nenhuma além do preço spot.
+    fechadas_por_ativo[a["name"]] = _fechadas
     for nm in sel_strats:
         sc = score_of(nm, d, interval)
         last = float(sc.iloc[-1]) if len(sc) else 0.0
@@ -2184,6 +2321,81 @@ hist = [h for h in hist_todos if not h.get("bloq")]
 hist_cortados = [h for h in hist_todos if h.get("bloq")]
 
 
+# ============================== RADAR ==============================
+# NÃO é sinal e NÃO pode virar um. Serve para uma coisa só: dizer qual ativo
+# deixar aberto na corretora nos segundos que antecedem a virada, para você não
+# perder tempo procurando o par quando a entrada de verdade sair.
+#
+# O que ele faz: monta uma vela PARCIAL com o preço de agora e roda as mesmas
+# estratégias sobre ela. Se o score provisório já passou do limiar, aquele ativo
+# é candidato.
+#
+# LIMITE HONESTO DA APROXIMAÇÃO: do meio da vela só conhecemos abertura e preço
+# atual — a máxima e a mínima percorridas dentro dela não estão disponíveis sem
+# dado tick a tick. Então os pavios são estimados pelo que o preço já andou, e
+# ficam SUBESTIMADOS. Para as estratégias de pavio/vela extrema (E, F, G, I) o
+# score provisório tende a sair menor que o final. É mais um motivo para o radar
+# ser lido como "olho nesse par", nunca como previsão.
+RADAR_JANELA = 60          # só nos últimos 60s da vela: antes disso não informa nada
+radar = []
+radar_ativo = (radar_on and auto_on and operando and not window_open
+               and 0 < secs_to_next <= RADAR_JANELA and not dados_atrasados)
+if radar_ativo:
+    _fx = [a["name"] for a in scan_list
+           if a["type"] == "fx" and a["name"] in fechadas_por_ativo]
+    _cr = [a["name"] for a in scan_list
+           if a["type"] == "crypto" and a["name"] in fechadas_por_ativo]
+    _precos = precos_agora(tuple(_fx), tuple(_cr), candle_key(minutes))
+    for a in scan_list:
+        nome = a["name"]
+        base = fechadas_por_ativo.get(nome)
+        px = _precos.get(nome)
+        if base is None or px is None or len(base) < 60:
+            continue
+        ab = float(base["Close"].iloc[-1])          # abertura da vela em formação
+        parcial = pd.DataFrame(
+            [{"Open": ab, "High": max(ab, px), "Low": min(ab, px), "Close": px}],
+            index=[pd.Timestamp(candle_key(minutes) * minutes * 60, unit="s")])
+        try:
+            dp = add_indicators(pd.concat([base, parcial]))
+        except Exception:
+            continue
+        melhor = None
+        for nm in sel_strats:
+            try:
+                sc = score_of(nm, dp, interval)
+            except Exception:
+                continue
+            if not len(sc):
+                continue
+            v = float(sc.iloc[-1])
+            if not math.isfinite(v):
+                continue
+            if melhor is None or abs(v) > abs(melhor[1]):
+                melhor = (nm, v)
+        if melhor is None or abs(melhor[1]) < MIN_SCORE * 0.75:
+            continue                                 # longe demais: não é candidato
+        radar.append({"ativo": nome, "estrategia": melhor[0], "score": melhor[1],
+                      "pct": min(999.0, abs(melhor[1]) / MIN_SCORE * 100.0),
+                      "dir": "COMPRA" if melhor[1] > 0 else "VENDA",
+                      "px": px, "var": px - ab})
+    radar.sort(key=lambda r: r["pct"], reverse=True)
+
+    # ---- medição da conversão ----
+    # Sem isto o radar seria julgado por impressão. Guarda os candidatos desta
+    # vela; na vela seguinte confere quais viraram entrada de fato.
+    st.session_state["radar_pend"] = {"ck": candle_key(minutes),
+                                      "ativos": [r["ativo"] for r in radar]}
+
+_rp = st.session_state.get("radar_pend")
+if _rp and _rp.get("ck") == candle_key(minutes) - 1 and _rp.get("ativos") is not None:
+    _virou = {e["a"]["name"] for e in entries_todos}
+    _acc = st.session_state.setdefault("radar_conv", [0, 0])   # [candidatos, viraram]
+    _acc[0] += len(_rp["ativos"])
+    _acc[1] += sum(1 for n in _rp["ativos"] if n in _virou)
+    st.session_state["radar_pend"] = None
+
+
 
 def bars(f):
     n = FORCE_ORDER.get(f, 0)
@@ -2321,6 +2533,39 @@ with tab_sig:
         f'<div class="diag">{"".join(cs)}</div></details>', unsafe_allow_html=True)
     if err:
         st.caption(f"Twelve Data: {err}")
+
+    # ---- RADAR ----
+    # Tratamento visual deliberadamente DIFERENTE do das entradas: borda
+    # tracejada, cor âmbar (nunca o verde/vermelho de COMPRA/VENDA) e o rótulo
+    # "não é entrada" no próprio cabeçalho. Se um dia isto parecer uma entrada,
+    # o design falhou — a confusão custaria uma operação fora da regra testada.
+    if radar_ativo and radar:
+        _linhas_r = ""
+        for r in radar:
+            _pl = min(100.0, r["pct"])
+            _pronto = r["pct"] >= 100
+            _linhas_r += (
+                f'<div class="rd-item">'
+                f'<span class="rd-nm">{r["ativo"]}</span>'
+                f'<span class="rd-tag">{r["dir"].lower()}</span>'
+                f'<span class="rd-bar"><i style="width:{_pl:.0f}%"></i></span>'
+                f'<span class="rd-pc">{pct(r["pct"], 0)}</span>'
+                f'<span class="rd-st">{"acima do limiar" if _pronto else "perto"}</span>'
+                f'</div>')
+        _cv = st.session_state.get("radar_conv", [0, 0])
+        _conv = (f'{_cv[1]}/{_cv[0]} candidatos viraram entrada '
+                 f'({pct(_cv[1] / _cv[0] * 100, 0)})' if _cv[0] else
+                 'ainda sem amostra para dizer quanto isso acerta')
+        st.markdown(
+            f'<div class="radar"><div class="rd-hd">'
+            f'<span class="rd-t">Radar · {int(secs_to_next)}s para a virada</span>'
+            f'<span class="rd-warn">não é entrada</span></div>'
+            f'{_linhas_r}'
+            f'<div class="rd-ft">Deixe o par aberto na corretora. O sinal só existe '
+            f'quando a vela fechar, e pode não sair — a vela ainda pode virar. '
+            f'Máxima e mínima da vela em formação não são conhecidas, então o '
+            f'percentual sai subestimado nas estratégias de pavio. '
+            f'Até agora: {_conv}.</div></div>', unsafe_allow_html=True)
 
     # Sem este aviso, um filtro ligado deixaria a tela vazia sem explicação e
     # pareceria bug — foi exatamente assim que o gate de janela de entrada
