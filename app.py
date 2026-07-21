@@ -871,6 +871,10 @@ a.card:hover .abrir{opacity:1}
 .volta a{font-size:.7rem;color:var(--mut);text-decoration:none!important}
 .volta a:hover{color:var(--ink2)}
 
+/* legenda do backtest quando o resultado exibido já não descreve o agora */
+.stale-cap{font-size:.72rem;color:var(--warn);line-height:1.5}
+.stale-cap b{color:var(--warn);font-weight:700}
+
 /* barra do que foi registrado na vela atual */
 .regbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;
   margin:var(--gap-curto) 0 var(--gap-bloco);font-size:.7rem}
@@ -2273,20 +2277,43 @@ with tab_perf:
 
     # Recálculo sob demanda: nada aqui roda sozinho, senão trava a aba Sinais.
     cp = get_perf()
+
+    # Primeiro cálculo automático. Não roda dentro da janela de entrada para não
+    # disputar o instante crítico com a varredura do sinal — nesse caso espera a
+    # janela fechar. Depois disso, só recalcula quando você pede.
+    if cp is None and not window_open:
+        with st.spinner("Rodando o backtest pela primeira vez…"):
+            cp = get_perf(calcular=True)
+
+    IDADE_MAX = 5 * 60          # acima disso o recorte "Hoje" já não descreve o dia
+    _idade = ((datetime.now(timezone.utc) - cp["quando"]).total_seconds()
+              if cp else 0.0)
+    _mudou_ctx = bool(cp) and cp["chave"] != (interval, len(scan_list),
+                                              tuple(sorted(sel_strats)))
+    _velho = bool(cp) and _idade > IDADE_MAX
+    _alerta = _mudou_ctx or _velho
+
     bc1, bc2 = st.columns([0.62, 4], vertical_alignment="center")
     with bc1:
         pedir = st.button("Calcular" if cp is None else "Recalcular",
-                          use_container_width=True, key="btn_perf")
+                          use_container_width=True, key="btn_perf",
+                          type="primary" if _alerta else "secondary")
     with bc2:
         if cp is None:
-            st.caption("O backtest baixa 1 mês de velas de todos os ativos — "
-                       "leva alguns segundos e por isso só roda quando você pede.")
+            st.caption("Aguardando a janela de entrada fechar para rodar o backtest "
+                       "— ele não disputa o instante do sinal.")
         else:
-            desatual = cp["chave"] != (interval, len(scan_list),
-                                       tuple(sorted(sel_strats)))
             q = f'calculado às {hm(cp["quando"])} em {cp["levou"]:.1f}s'
-            st.caption(("⚠️ " + q + " — com outro timeframe/lista de ativos. Recalcule."
-                        ) if desatual else q)
+            if _mudou_ctx:
+                st.markdown(f'<div class="stale-cap">{q} — com <b>outro timeframe ou '
+                            f'lista de ativos</b>. Recalcule.</div>',
+                            unsafe_allow_html=True)
+            elif _velho:
+                st.markdown(f'<div class="stale-cap">{q}, há <b>{_idade/60:.0f} min</b>. '
+                            f'A coluna “Hoje” muda a cada vela nova — recalcule para '
+                            f'ver o dia corrente.</div>', unsafe_allow_html=True)
+            else:
+                st.caption(q)
     if pedir:
         with st.spinner("Rodando o backtest…"):
             cp = get_perf(calcular=True)
