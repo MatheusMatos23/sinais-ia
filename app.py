@@ -1620,6 +1620,7 @@ def url_com(**kw):
 # é espelhado num Gist privado e sobrevive aos reinícios.
 GIST_FILE = "sinais_historico.json"      # histórico
 GIST_CFG = "kairo_config.json"           # preferências
+GIST_BT = "kairo_backtest.json"          # retrato do backtest, lido pelo resumo diário
 
 
 def _gh():
@@ -2725,11 +2726,47 @@ def get_perf(calcular=False):
     """
     if calcular:
         t0 = time.perf_counter()
+        _dados = run_perf()
         st.session_state["perf_cache"] = {
             "chave": (interval, len(analise_list), tuple(sorted(sel_strats))),
-            "dados": run_perf(),
+            "dados": _dados,
             "quando": datetime.now(timezone.utc), "levou": time.perf_counter() - t0}
+        # Retrato compacto para o resumo diário. O app é o único lugar que
+        # consegue rodar o backtest (a sessão do resumo não busca cotação), então
+        # ele deixa o resultado no Gist para o resumo apenas LER — nunca
+        # recalcular por fora, o que daria número diferente. Reflete a última vez
+        # que o app foi aberto e recalculado, e o próprio retrato diz quando foi.
+        _salva_retrato_backtest(_dados)
     return st.session_state.get("perf_cache")      # None = ainda não calculado
+
+
+def _salva_retrato_backtest(dados):
+    """Grava no Gist um resumo enxuto do backtest, para o resumo diário ler."""
+    if not HIST_REMOTO:
+        return
+    try:
+        _av = []
+        for nome, (n_, w_) in (dados.get("ativos") or {}).items():
+            if n_ < 200:
+                continue
+            tx = w_ / n_ * 100
+            be = breakeven(payout_de(nome)) * 100
+            _av.append({"ativo": nome, "ops": n_, "taxa": round(tx, 2),
+                        "payout": round(payout_de(nome) * 100, 1),
+                        "breakeven": round(be, 2), "margem_pp": round(tx - be, 2)})
+        _av.sort(key=lambda x: -x["margem_pp"])
+        _fr = {}
+        for k, (n_, w_) in (dados.get("forcas") or {}).items():
+            if n_:
+                _fr[k] = {"ops": n_, "taxa": round(w_ / n_ * 100, 2)}
+        retrato = {
+            "gerado_utc": datetime.now(timezone.utc).isoformat(),
+            "timeframe_min": int(TF), "payout_padrao_pct": round(PAYOUT * 100, 1),
+            "breakeven_pct": round(breakeven(PAYOUT) * 100, 2),
+            "mercado": mercado, "por_ativo": _av, "por_forca": _fr}
+        gist_save(retrato, GIST_BT)
+    except Exception:
+        pass          # retrato é conforto; nunca pode derrubar o recálculo
 
 # ============================== TOPBAR ==============================
 # Cripto opera 24/7: com a varredura só em cripto, "Forex fechado" não descreve
