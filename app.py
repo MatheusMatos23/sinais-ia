@@ -1236,8 +1236,9 @@ st.markdown('</div>', unsafe_allow_html=True)
 # As abas nascem aqui, logo abaixo da barra de controles. Antes o painel de
 # ajustes era um expander no meio da tela de operação; agora é uma aba própria e
 # a tela principal fica só com o que importa na hora de entrar.
-tab_sig, tab_perf, tab_hist, tab_cfg = st.tabs(
-    ["Sinais", "Desempenho", "Histórico", "Ajustes"])
+# Ordem = fluxo de uso: operar → quanto rendeu → tem vantagem? → auditoria → config.
+tab_sig, tab_res, tab_perf, tab_hist, tab_cfg = st.tabs(
+    ["Sinais", "Resultado", "Desempenho", "Histórico", "Ajustes"])
 
 with tab_cfg:
     o1, o2, o3 = st.columns(3)
@@ -1989,6 +1990,208 @@ with tab_sig:
             window.parent.sessionStorage.setItem('dito',String(c));say(FALA);}}}})();
         </script>""", height=1)
 
+# ============================== ABA RESULTADO ==============================
+with tab_res:
+    _res_base = [h for h in hist if h.get("exec", True)
+                 and h["res"] in ("ganhou", "perdeu", "empate") and h.get("stake")]
+
+    if not _res_base:
+        st.markdown('<div class="sect">Resultado financeiro</div>', unsafe_allow_html=True)
+        st.caption("Ainda não há operações com valor registrado. Defina o "
+                   "*Valor por entrada* em Ajustes e marque em Histórico o que você "
+                   "executou de fato — o resultado é calculado só sobre isso.")
+    else:
+        def _stats(itens, payout_sim=None):
+            """Dinheiro E veredito do mesmo recorte, sempre juntos.
+            payout_sim recalcula o resultado como se o payout fosse outro."""
+            f = [h for h in itens if h["res"] in ("ganhou", "perdeu")]
+            n, w = len(f), sum(1 for h in f if h["res"] == "ganhou")
+            if payout_sim is None:
+                money = sum(pnl_de(h) for h in itens)
+                pay = (sum(float(h.get("payout") or .8) for h in f) / n) if n else PAYOUT
+            else:
+                pay = payout_sim
+                money = sum(float(h["stake"]) * pay if h["res"] == "ganhou"
+                            else -float(h["stake"])
+                            for h in f)
+            v = verdict(w, n, pay) if n else "sem dados"
+            lo = wilson_ci(w, n)[1] * 100 if n else 0.0
+            hi = wilson_ci(w, n)[2] * 100 if n else 0.0
+            return {"money": money, "n": n, "w": w, "pay": pay, "verd": v,
+                    "taxa": (w / n * 100) if n else float("nan"),
+                    "lo": lo, "hi": hi, "be": breakeven(pay) * 100}
+
+        VT = {"acima": ("good", "acima do breakeven"),
+              "abaixo": ("bad", "abaixo do breakeven"),
+              "inconclusivo": ("mid", "não conclusivo"),
+              "sem dados": ("mid", "sem dados")}
+
+        def bloco_valor(rot, itens):
+            """Regra da aba: nenhum valor aparece sem o veredito do mesmo recorte."""
+            d = _stats(itens)
+            if not d["n"]:
+                return (f'<div class="stat"><span class="k">{rot}</span>'
+                        f'<span class="v mid">—</span>'
+                        f'<span class="x">nenhuma operação</span></div>')
+            cls, txt = VT[d["verd"]]
+            sinal = "good" if d["money"] > 0 else ("bad" if d["money"] < 0 else "mid")
+            return (f'<div class="stat"><span class="k">{rot}</span>'
+                    f'<span class="v {sinal}">{d["money"]:+.2f}</span>'
+                    f'<span class="x">{d["n"]} ops · {d["taxa"]:.1f}% · IC95 '
+                    f'{d["lo"]:.0f}–{d["hi"]:.0f}% · <b class="{cls}">{txt}</b></span></div>')
+
+        _hoje = br(now).date()
+        _sem = [h for h in _res_base if (_hoje - br(h["ts"]).date()).days <= 6]
+        _mes = [h for h in _res_base if (_hoje - br(h["ts"]).date()).days <= 29]
+        _dia = [h for h in _res_base if br(h["ts"]).date() == _hoje]
+
+        st.markdown('<div class="sect">Resultado por período</div>', unsafe_allow_html=True)
+        st.markdown('<div class="statrow">'
+                    + bloco_valor("Hoje", _dia)
+                    + bloco_valor("Últimos 7 dias", _sem)
+                    + bloco_valor("Últimos 30 dias", _mes)
+                    + bloco_valor("Tudo", _res_base)
+                    + '</div>', unsafe_allow_html=True)
+        st.markdown('<div class="note">Cada valor vem com o veredito do mesmo recorte '
+                    'de propósito. Ficar positivo por dias seguidos é perfeitamente '
+                    'normal sem haver vantagem nenhuma — o dinheiro sozinho não '
+                    'distingue sorte de método.</div>', unsafe_allow_html=True)
+
+        # ---------- curva de capital ----------
+        _cap = sorted(_res_base, key=lambda x: x["ts"])
+        if len(_cap) >= 8:
+            eq, pico, ddmax, ddpct, acc = [], 0.0, 0.0, 0.0, 0.0
+            for h in _cap:
+                acc += pnl_de(h)
+                eq.append(acc)
+                pico = max(pico, acc)
+                if pico - acc > ddmax:
+                    ddmax = pico - acc
+                    ddpct = (ddmax / pico * 100) if pico > 0 else 0.0
+            _pm = sum(float(h.get("payout") or .8) for h in _cap) / len(_cap)
+            _sm = sum(float(h.get("stake") or 0) for h in _cap) / len(_cap)
+            ref = [_sm * (0.5 * _pm - 0.5) * (i + 1) for i in range(len(_cap))]
+            _all = eq + ref + [0.0]
+            _lo2, _hi2 = min(_all), max(_all)
+            _rg = max(_hi2 - _lo2, 1e-9)
+            H2 = 40.0
+
+            def _y2(v):
+                return H2 - (v - _lo2) / _rg * H2
+
+            _p1 = " ".join(f"{i/(len(eq)-1)*100:.2f},{_y2(v):.2f}" for i, v in enumerate(eq))
+            _p2 = " ".join(f"{i/(len(ref)-1)*100:.2f},{_y2(v):.2f}" for i, v in enumerate(ref))
+            _c = "var(--buy)" if eq[-1] >= 0 else "var(--sell)"
+            st.markdown('<div class="sect">Curva de capital</div>', unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="curva"><div class="c-head">'
+                f'<span class="k">Resultado acumulado</span>'
+                f'<span class="lg"><i class="be"></i>moeda (50% de acerto)</span></div>'
+                f'<svg viewBox="0 0 100 {H2}" preserveAspectRatio="none">'
+                f'<line x1="0" y1="{_y2(0):.2f}" x2="100" y2="{_y2(0):.2f}" '
+                f'stroke="var(--line2)" stroke-width=".3"/>'
+                f'<polyline points="{_p2}" fill="none" stroke="var(--warn)" stroke-width=".7" '
+                f'stroke-dasharray="2 2" vector-effect="non-scaling-stroke" opacity=".8"/>'
+                f'<polyline points="{_p1}" fill="none" stroke="{_c}" stroke-width="1" '
+                f'vector-effect="non-scaling-stroke" stroke-linejoin="round"/></svg>'
+                f'<div class="c-foot"><span>{len(_cap)} operações</span>'
+                f'<span class="mono">resultado {eq[-1]:+.2f} · pior queda {ddmax:.2f}'
+                f'{f" ({ddpct:.0f}% do pico)" if ddpct else ""}</span></div></div>',
+                unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="note">A tracejada é o que uma <b>moeda</b> renderia nas '
+                f'mesmas apostas: com payout médio de {_pm*100:.0f}%, acertar metade das '
+                f'vezes dá prejuízo constante. Estar acima dela não é vantagem — é apenas '
+                f'não estar perdendo no ritmo do acaso.<br><b>Pior queda</b> é a maior '
+                f'distância entre um pico e o vale seguinte. É ela, e não a taxa de '
+                f'acerto, que define o tamanho de banca necessário para aguentar a '
+                f'estratégia sem quebrar no meio.</div>', unsafe_allow_html=True)
+
+        # ---------- quebra por recorte ----------
+        def tabela_quebra(titulo, chave, itens):
+            grupos = {}
+            for h in itens:
+                for k in (chave(h) if isinstance(chave(h), list) else [chave(h)]):
+                    grupos.setdefault(k, []).append(h)
+            if not grupos:
+                return
+            linhas = ""
+            for k, v in sorted(grupos.items(),
+                               key=lambda kv: -sum(pnl_de(x) for x in kv[1])):
+                d = _stats(v)
+                cls, txt = VT[d["verd"]]
+                sinal = "good" if d["money"] > 0 else ("bad" if d["money"] < 0 else "mid")
+                linhas += (f'<tr><td class="nm">{k}</td>'
+                           f'<td class="mono {sinal}" style="font-weight:700">'
+                           f'{d["money"]:+.2f}</td>'
+                           f'<td class="n mono">{d["n"]}</td>'
+                           f'<td class="n mono">{d["taxa"]:.1f}%</td>'
+                           f'<td class="n mono">{d["pay"]*100:.0f}%</td>'
+                           f'<td><span class="verd v-{cls if cls != "good" else "good"}">'
+                           f'{txt}</span></td></tr>')
+            st.markdown(f'<div class="sect">{titulo}</div>', unsafe_allow_html=True)
+            st.markdown(f'<table class="tbl"><tr><th>{titulo.split("por ")[-1].capitalize()}</th>'
+                        f'<th>Resultado</th><th>Ops</th><th>Acerto</th><th>Payout</th>'
+                        f'<th>Veredito</th></tr>{linhas}</table>', unsafe_allow_html=True)
+
+        tabela_quebra("Resultado por estratégia", lambda h: h["strats"], _res_base)
+        tabela_quebra("Resultado por ativo", lambda h: h["asset"], _res_base)
+        tabela_quebra("Resultado por timeframe",
+                      lambda h: f'{h.get("tf", "—")} min', _res_base)
+        st.markdown('<div class="note">Uma estratégia com boa taxa de acerto pode perder '
+                    'dinheiro por operar num par de payout menor. Em taxa isso é '
+                    'invisível; em dinheiro, não.</div>', unsafe_allow_html=True)
+
+        # ---------- simulador de payout ----------
+        st.markdown('<div class="sect">E se o payout fosse outro?</div>',
+                    unsafe_allow_html=True)
+        _sim = st.slider("Payout simulado", 70, 95,
+                         int(round(_stats(_res_base)["pay"] * 100)), step=1,
+                         format="%d%%")
+        d0 = _stats(_res_base)
+        d1 = _stats(_res_base, payout_sim=_sim / 100)
+        _dif = d1["money"] - d0["money"]
+        st.markdown(
+            f'<div class="sumbar {"good" if d1["verd"] == "acima" else "mid"}">'
+            f'<div class="s-main">Com payout de <b>{_sim}%</b>, as mesmas '
+            f'{d1["n"]} operações dariam <b class="big '
+            f'{"good" if d1["money"] > 0 else "bad"}">{d1["money"]:+.2f}</b></div>'
+            f'<div class="s-side">'
+            f'<span><i>{_dif:+.2f}</i>diferença</span>'
+            f'<span><i>{d1["be"]:.1f}%</i>breakeven</span>'
+            f'<span><i>{d1["taxa"]:.1f}%</i>sua taxa</span>'
+            f'<span><i>{VT[d1["verd"]][1]}</i>veredito</span></div></div>',
+            unsafe_allow_html=True)
+        st.markdown(
+            f'<div class="note">Este é o controle mais acionável do sistema. As melhores '
+            f'estratégias medidas aqui ficam entre 53% e 55% de acerto, e o breakeven cai '
+            f'de <b>55,6%</b> (payout 80%) para <b>52,6%</b> (payout 90%). Negociar payout '
+            f'com a corretora move mais o resultado do que trocar de estratégia — e é a '
+            f'única variável sob seu controle direto.</div>', unsafe_allow_html=True)
+
+        # ---------- sequência atual ----------
+        _ordem = [h for h in sorted(_res_base, key=lambda x: x["ts"])
+                  if h["res"] in ("ganhou", "perdeu")]
+        if _ordem:
+            _seq, _tipo = 0, _ordem[-1]["res"]
+            for h in reversed(_ordem):
+                if h["res"] == _tipo:
+                    _seq += 1
+                else:
+                    break
+            _hoje_pnl = sum(pnl_de(h) for h in _dia)
+            _rest = (abs(lim_val) + _hoje_pnl) if lim_on else None
+            _extra = (f' · faltam <b>{_rest:.2f}</b> para o limite diário'
+                      if _rest is not None and _rest > 0 else
+                      (' · <b>limite diário atingido</b>' if _rest is not None else ''))
+            st.markdown(
+                f'<div class="note">Sequência atual: <b>{_seq} '
+                f'{"vitória" if _tipo == "ganhou" else "perda"}'
+                f'{"s" if _seq > 1 else ""} seguida{"s" if _seq > 1 else ""}</b>. '
+                f'Resultado de hoje: <b>{_hoje_pnl:+.2f}</b>{_extra}.</div>',
+                unsafe_allow_html=True)
+
+
 # ============================== ABA DESEMPENHO ==============================
 with tab_perf:
     VS = {"acima": ("v-good", "acima do breakeven"), "abaixo": ("v-bad", "abaixo do breakeven"),
@@ -2315,66 +2518,6 @@ with tab_hist:
                 f'com os dados carregados. Para resolvê-los, volte ao timeframe e ao '
                 f'mercado correspondentes por alguns instantes.</div></div>',
                 unsafe_allow_html=True)
-
-        # ---- curva de capital, drawdown e referência aleatória ----
-        # A taxa de acerto esconde o que quebra conta: duas estratégias com 54%
-        # podem ter sequências de perda muito diferentes, e é a sequência que
-        # determina o tamanho da banca necessária.
-        _cap = [h for h in sorted(vis, key=lambda x: x["ts"])
-                if h["res"] in ("ganhou", "perdeu", "empate") and h.get("stake")]
-        if len(_cap) >= 8:
-            eq, pico, ddmax, ddmax_pct = [], 0.0, 0.0, 0.0
-            acc = 0.0
-            for h in _cap:
-                acc += pnl_de(h)
-                eq.append(acc)
-                pico = max(pico, acc)
-                dd = pico - acc
-                if dd > ddmax:
-                    ddmax = dd
-                    ddmax_pct = (dd / pico * 100) if pico > 0 else 0.0
-            # referência: mesma sequência de apostas com 50% de acerto (moeda)
-            _pm = sum(float(h.get("payout") or .8) for h in _cap) / len(_cap)
-            _sm = sum(float(h.get("stake") or 0) for h in _cap) / len(_cap)
-            _passo = _sm * (0.5 * _pm - 0.5)          # esperança por operação
-            ref = [_passo * (i + 1) for i in range(len(_cap))]
-
-            _todos = eq + ref
-            _lo, _hi = min(_todos + [0.0]), max(_todos + [0.0])
-            _rng = max(_hi - _lo, 1e-9)
-            H2 = 40.0
-
-            def _y2(v):
-                return H2 - (v - _lo) / _rng * H2
-
-            _p1 = " ".join(f"{i/(len(eq)-1)*100:.2f},{_y2(v):.2f}"
-                           for i, v in enumerate(eq))
-            _p2 = " ".join(f"{i/(len(ref)-1)*100:.2f},{_y2(v):.2f}"
-                           for i, v in enumerate(ref))
-            _cor = "var(--buy)" if eq[-1] >= 0 else "var(--sell)"
-            st.markdown(
-                f'<div class="curva"><div class="c-head">'
-                f'<span class="k">Resultado acumulado · valor por entrada gravado</span>'
-                f'<span class="lg"><i class="be"></i>moeda (50%)</span></div>'
-                f'<svg viewBox="0 0 100 {H2}" preserveAspectRatio="none">'
-                f'<line x1="0" y1="{_y2(0):.2f}" x2="100" y2="{_y2(0):.2f}" '
-                f'stroke="var(--line2)" stroke-width=".3"/>'
-                f'<polyline points="{_p2}" fill="none" stroke="var(--warn)" '
-                f'stroke-width=".7" stroke-dasharray="2 2" vector-effect="non-scaling-stroke" '
-                f'opacity=".8"/>'
-                f'<polyline points="{_p1}" fill="none" stroke="{_cor}" stroke-width="1" '
-                f'vector-effect="non-scaling-stroke" stroke-linejoin="round"/></svg>'
-                f'<div class="c-foot"><span>{len(_cap)} operações</span>'
-                f'<span class="mono">resultado {eq[-1]:+.2f} · '
-                f'pior queda {ddmax:.2f}'
-                f'{f" ({ddmax_pct:.0f}% do pico)" if ddmax_pct else ""}</span></div></div>'
-                f'<div class="note">A linha tracejada é o que uma <b>moeda</b> renderia '
-                f'nas mesmas apostas: com payout médio de {_pm*100:.0f}%, acertar metade '
-                f'das vezes dá prejuízo constante. Estar acima dela não significa ter '
-                f'vantagem — significa apenas não estar perdendo no ritmo do acaso. '
-                f'<b>Pior queda</b> é a maior distância entre um pico e o vale seguinte: '
-                f'é ela, não a taxa de acerto, que define o tamanho de banca necessário.'
-                f'</div>', unsafe_allow_html=True)
 
         # ---- aviso de sequência ruim ----
         # Não prova nada sobre a estratégia: sequências ruins acontecem mesmo com
