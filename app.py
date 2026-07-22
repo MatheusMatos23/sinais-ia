@@ -2366,17 +2366,24 @@ def negociavel(a, quando):
     return pair_open(a, quando)
 
 
-open_assets = [a for a in _universo if negociavel(a, now)]
-scan_list = _universo if show_closed else open_assets
-# O veto da corretora vale SEMPRE que estiver ligado, inclusive com "incluir
-# pares fora de sessão". São coisas diferentes: aquele toggle é sobre liquidez
-# do interbancário; este é sobre o botão existir na sua tela da Bullex. De nada
-# adianta um sinal num ativo que a corretora não deixa você operar.
+# UMA autoridade só sobre "posso operar isto agora", não duas brigando.
+# Havia dois relógios: as SESSÕES do interbancário (Sydney/Londres/NY) e a GRADE
+# da corretora. Exigindo os dois, um par podia estar aberto na Bullex mas fora
+# da sessão de Londres e sumir da varredura — à meia-noite, EUR/USD e GBP/USD
+# apareciam abertos na corretora e mesmo assim não eram varridos. Não é bug de
+# "escolher os melhores": era a interseção de dois filtros.
+# No modo Bullex, a corretora é a ÚNICA autoridade — é onde você clica o botão.
+# No modo Sessão, vale o interbancário (com o toggle "incluir fora de sessão").
 fechados_corretora = []
 if USAR_GRADE:
-    fechados_corretora = [a["name"] for a in scan_list
-                          if not aberto_na_corretora(a["name"], now, GRADE_CORRETORA)]
-    scan_list = [a for a in scan_list if a["name"] not in fechados_corretora]
+    scan_list = [a for a in _universo
+                 if aberto_na_corretora(a["name"], now, GRADE_CORRETORA)]
+    fechados_corretora = [a["name"] for a in _universo
+                          if a["type"] == "fx"
+                          and not aberto_na_corretora(a["name"], now, GRADE_CORRETORA)]
+else:
+    open_assets = [a for a in _universo if negociavel(a, now)]
+    scan_list = _universo if show_closed else open_assets
 
 # ANÁLISE HISTÓRICA usa o universo INTEIRO, não o que está aberto agora.
 # BUG CORRIGIDO: o backtest da aba Desempenho rodava sobre scan_list, e desde
@@ -2790,7 +2797,8 @@ topbar_slot.markdown(f"""
     <div class="vbar"></div>
     <div class="meta"><span class="k">Status</span><span class="v">{stat}</span></div>
     <div class="meta"><span class="k">Sessões</span><span class="v">{sess}</span></div>
-    <div class="meta"><span class="k">Varredura</span><span class="v">{len(scan_list)} ativos</span></div>
+    <div class="meta"><span class="k">Varredura</span>
+      <span class="v" title="Em varredura agora: {', '.join(a['name'] for a in scan_list) or 'nenhum'}">{len(scan_list)} ativos</span></div>
     <div class="meta"><span class="k">Horário de Brasília</span>
       <span class="v mono">{br(now).strftime('%H:%M:%S')}</span></div>
     <div class="meta cd-meta"><span class="k">Próxima vela</span>
@@ -3156,6 +3164,10 @@ with tab_sig:
             val += f' · {nbf(lag, 1)}min'
         cs.append(chip(SRC.get(src, src), val, alerta=(src == "yfinance")))
     cs.append(chip("Busca", f"{nbf(fetch_s, 1)}s"))
+    # QUAIS pares estão em varredura, por nome. O contador "3 ativos" não dizia
+    # quais eram, e a diferença para a grade da corretora gerava dúvida legítima.
+    if scan_list:
+        cs.append(chip("Varrendo", ", ".join(a["name"] for a in scan_list)[:70]))
     # Latência da VIRADA: só faz sentido medir no rerun disparado pela troca de
     # vela. Num carregamento manual no meio da vela, _age é a idade da vela e não
     # mede nada — por isso só grava dentro da janela de entrada, e nas demais
