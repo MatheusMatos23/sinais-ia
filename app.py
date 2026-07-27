@@ -376,12 +376,12 @@ def hm_exp(ts, minutos):
 # forte 54,1% contra fraca 53,9% em 10.045 operações — e não separou nada.
 # Aqui a hipótese é outra (regime + qualidade da vela + dado limpo), mas continua
 # sendo hipótese até a amostra falar.
-# Forward test M15 roda no scanner de fundo (GitHub Actions), que é o ÚNICO
-# escritor do histórico. Com isto ligado, o app NÃO grava sinais novos no Gist —
-# apenas lê, exibe e apura. Evita corrida entre dois escritores e os buracos de
-# captura do app (que dependia de aba aberta na virada). Desligar só para voltar
-# a gravar pelo navegador.
-SCANNER_ATIVO = True
+# O app grava as entradas AO VIVO na virada da vela (comportamento original,
+# que rodava liso). O scanner de fundo é apenas um COMPLEMENTO forward-only:
+# preenche velas recém-fechadas que o app tenha perdido por estar fechado na
+# virada. Ambos deduplicam por (ativo, vela, tf), então não há registro dobrado.
+# Deixar False mantém o app como gravador principal.
+SCANNER_ATIVO = False
 
 PREMIUM_VER = 1
 PREMIUM_REGRAS = [

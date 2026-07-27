@@ -47,6 +47,11 @@ ESTRATEGIAS = [
     "I · Fade extremo lateral", "J · Z-score forte", "K · Reversão dupla",
 ]
 FORCA_MIN = "FRACA"                 # grava tudo; a análise por força vem depois
+# FORWARD-ONLY: só registra velas que fecharam há no máximo este tempo. Assim o
+# scanner é um COMPLEMENTO (preenche o que o app perdeu na virada), NUNCA um
+# backtest — jamais reconstrói velas antigas. 45 min cobre ~3 velas M15, folga
+# suficiente para um atraso/pulo do cron do GitHub.
+JANELA_GAP_MIN = 45
 PAYOUT = 0.85
 STAKE = 100.0
 MERCADO = "Só forex"
@@ -324,8 +329,14 @@ def main():
         if df is None or len(df) < 70:
             continue
         for t_abre in df.index:
-            # só velas JÁ FECHADAS (abertura + 15min no passado)
-            if t_abre + pd.Timedelta(minutes=TF_MIN) > agora:
+            t_close = t_abre + pd.Timedelta(minutes=TF_MIN)
+            # só velas JÁ FECHADAS
+            if t_close > agora:
+                continue
+            # FORWARD-ONLY: ignora vela que fechou há muito tempo. Registrá-la
+            # seria reconstruir passado (backtest), não teste real. O scanner só
+            # cobre a lacuna recente que o app não gravou ao vivo.
+            if (agora - t_close) > pd.Timedelta(minutes=JANELA_GAP_MIN):
                 continue
             ck = int(t_abre.value // 10**9 // per)
             if (nome, ck, TF_MIN) in vistos:
