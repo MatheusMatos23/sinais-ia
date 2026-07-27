@@ -2868,25 +2868,37 @@ def record_and_resolve(entries, data, minutes, na_janela):
                          "payout": payout_de(nome), "stake": float(stake)})
             seen.add(k)
             changed = True
-            # ALERTA TELEGRAM — SÓ PREMIUM, por escolha do dono: é a coorte que a
-            # medição out-of-sample favoreceu (59,4% vs 52,6% em 25 mil velas) e
-            # alertar tudo viraria ruído no bolso. Dispara UMA vez por entrada
-            # (este bloco só roda quando a chave é nova) e só se passou nos
-            # filtros. O resultado da mesma entrada chega quando a vela fechar.
-            if not e.get("bloq") and e.get("premium"):
-                _q = qualidade.get(nome, {})
+            # ALERTA TELEGRAM — espelha O QUE A TELA MOSTRA com os filtros do
+            # usuário: sinal que passou nos filtros de qualidade e, se o modo
+            # "operar só Premium" estiver ligado, apenas os premium. O visual
+            # diferencia as duas classes: 💎 PREMIUM (cabeçalho próprio, corpo/
+            # ATR) vs ⚡ normal (enxuto). Dispara UMA vez por entrada (bloco só
+            # roda quando a chave é nova); o resultado chega quando a vela fecha.
+            _alerta_tg = (not e.get("bloq")) and (e.get("premium") or not prem_on)
+            # marca no registro: o RESULTADO só é enviado para o que foi
+            # alertado — celular e histórico contam a mesma história.
+            hist[-1]["tg"] = bool(_alerta_tg)
+            if _alerta_tg:
                 _cf = "\n⚠ Atenção: há sinal na direção OPOSTA nesta vela." if e.get("conflito") else ""
                 _seta = "🟢▲" if e["dir"] == "COMPRA" else "🔴▼"
-                telegram_send(
-                    f"💎 <b>SINAL PREMIUM</b>\n"
-                    f"{_seta} <b>{nome} — {e['dir']}</b> · força {e['force'].lower()}\n"
-                    f"🕐 vela {hm(start)} → expira "
-                    f"{hm_exp(start, minutes).split('→')[-1].strip()}\n"
-                    f"📐 {len(e['strats'])} estratégias concordam "
-                    f"({'+'.join(_short(s) for s in e['strats'])})"
-                    + (f" · corpo {nbf(_q['corpo'], 0)}%" if _q.get("corpo") is not None else "")
-                    + (f" · ATR p{nbf(_q['atrp'], 0)}" if _q.get("atrp") is not None else "")
-                    + f"\n⏱ Entre nos primeiros {ENTRY_WINDOW}s da vela.{_cf}")
+                _exp = hm_exp(start, minutes).split('→')[-1].strip()
+                _ests = "+".join(_short(s) for s in e["strats"])
+                if e.get("premium"):
+                    _q = qualidade.get(nome, {})
+                    telegram_send(
+                        f"💎 <b>SINAL PREMIUM</b>\n"
+                        f"{_seta} <b>{nome} — {e['dir']}</b> · força {e['force'].lower()}\n"
+                        f"🕐 vela {hm(start)} → expira {_exp}\n"
+                        f"📐 {len(e['strats'])} estratégias concordam ({_ests})"
+                        + (f" · corpo {nbf(_q['corpo'], 0)}%" if _q.get("corpo") is not None else "")
+                        + (f" · ATR p{nbf(_q['atrp'], 0)}" if _q.get("atrp") is not None else "")
+                        + f"\n⏱ Entre nos primeiros {ENTRY_WINDOW}s da vela.{_cf}")
+                else:
+                    telegram_send(
+                        f"⚡ Sinal · {_seta} <b>{nome} — {e['dir']}</b> "
+                        f"({e['force'].lower()})\n"
+                        f"🕐 vela {hm(start)} → expira {_exp} · {_ests}\n"
+                        f"⏱ Primeiros {ENTRY_WINDOW}s da vela.{_cf}")
     for h in hist:                                        # apura o que já fechou
         if h["res"] is not None:
             continue
@@ -2927,14 +2939,17 @@ def record_and_resolve(entries, data, minutes, na_janela):
             h["ap_low"] = round(lo, 6) if math.isfinite(lo) else None
             h["ap_src"] = st.session_state.get("fontes", {}).get(h["asset"], "?")
             changed = True
-            # RESULTADO NO TELEGRAM — mesma régua do alerta de entrada (só
-            # premium): fecha o ciclo sinal → resultado no celular. Este bloco
-            # roda UMA vez por entrada (res transita de None para definitivo).
-            if h.get("premium"):
+            # RESULTADO NO TELEGRAM — mesma régua do alerta de entrada: só o que
+            # foi alertado recebe resultado (marca "tg" gravada no registro;
+            # registros antigos sem a marca caem no critério premium). O prefixo
+            # diferencia a classe: 💎 premium · ⚡ normal. Roda UMA vez por
+            # entrada (res transita de None para definitivo).
+            if h.get("tg", h.get("premium")):
                 _ico = {"ganhou": "✅ <b>GANHOU</b>", "perdeu": "❌ <b>PERDEU</b>",
                         "empate": "↔ <b>EMPATE</b> (reembolso)"}[h["res"]]
+                _cls = "💎" if h.get("premium") else "⚡"
                 telegram_send(
-                    f"💎 <b>{h['asset']}</b> {h['dir']} — {_ico}\n"
+                    f"{_cls} <b>{h['asset']}</b> {h['dir']} — {_ico}\n"
                     f"vela {hm(h['ts'])} · abriu {fmt_price(h['asset'], op)} · "
                     f"fechou {fmt_price(h['asset'], cl)}")
     if len(hist) > 3000:
