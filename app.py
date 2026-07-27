@@ -2892,6 +2892,8 @@ def hist_df(h):
         # prova do resultado — para conferir contra o feed da corretora
         "apuracao_abertura": r.get("ap_open", ""), "apuracao_fech": r.get("ap_close", ""),
         "apuracao_var": r.get("ap_var", ""), "apuracao_fonte": r.get("ap_src", ""),
+        "apuracao_max": r.get("ap_high", ""), "apuracao_min": r.get("ap_low", ""),
+        "empate_suspeito": "sim" if r.get("emp_suspeito") else "",
     } for r in sorted(h, key=lambda x: x["ts"], reverse=True)])
 
 
@@ -2957,11 +2959,23 @@ def record_and_resolve(entries, data, minutes, na_janela):
         if ts in df.index and df.index[-1] > ts:
             row = df.loc[ts]
             op, cl = float(row["Open"]), float(row["Close"])
+            hi = float(row["High"]) if "High" in row else float("nan")
+            lo = float(row["Low"]) if "Low" in row else float("nan")
             if cl == op:
+                # EMPATE SUSPEITO: abertura == fechamento até a última casa é quase
+                # impossível numa vela real. No yfinance de forex acontece porque
+                # o feed devolve a vela achatada (repete a abertura como fecho) —
+                # e na corretora essa mesma vela se moveu. Se a MÁXIMA e a MÍNIMA
+                # da vela mostram range de verdade, o "empate" é artefato de dado,
+                # não um empate real: o app não conseguiu ler o movimento.
+                _range = (hi - lo) if (math.isfinite(hi) and math.isfinite(lo)) else 0.0
+                _suspeito = _range > 0
                 h["res"] = "empate"
+                h["emp_suspeito"] = bool(_suspeito)
             else:
                 venceu = (cl > op) == (h["dir"] == "COMPRA")
                 h["res"] = "ganhou" if venceu else "perdeu"
+                h["emp_suspeito"] = False
             # Prova do resultado: exatamente os números que decidiram ganhou/perdeu,
             # e de qual feed vieram. A opção binária liquida no feed DA CORRETORA,
             # que não é este; quando der divergência, dá para comparar os dois
@@ -2969,6 +2983,8 @@ def record_and_resolve(entries, data, minutes, na_janela):
             h["ap_open"] = round(op, 6)
             h["ap_close"] = round(cl, 6)
             h["ap_var"] = round(cl - op, 6)
+            h["ap_high"] = round(hi, 6) if math.isfinite(hi) else None
+            h["ap_low"] = round(lo, 6) if math.isfinite(lo) else None
             h["ap_src"] = st.session_state.get("fontes", {}).get(h["asset"], "?")
             changed = True
     if len(hist) > 3000:
@@ -3541,6 +3557,26 @@ with tab_res:
                        "Histórico → Backup e importação antes, se quiser poder voltar. "
                        "Só o valor por entrada muda; resultado, horário e preços de "
                        "apuração ficam intactos.")
+
+    # ---- empates suspeitos: falso empate por dado achatado do yfinance ----
+    _emp_susp = [h for h in hist if h.get("emp_suspeito")]
+    if _emp_susp:
+        _por_at = {}
+        for h in _emp_susp:
+            _por_at[h["asset"]] = _por_at.get(h["asset"], 0) + 1
+        _at_txt = ", ".join(f"{k} ({v})" for k, v in
+                            sorted(_por_at.items(), key=lambda kv: -kv[1]))
+        st.markdown(
+            f'<div class="win alert"><span class="pt"></span><div class="msg">'
+            f'<b>{len(_emp_susp)} empate(s) provavelmente falso(s).</b> Nessas velas '
+            f'a abertura e o fechamento vieram idênticos do yfinance, mas a máxima e '
+            f'a mínima mostram que a vela SE MOVEU — ou seja, o feed achatou a vela e '
+            f'na corretora ela foi vitória ou derrota de verdade. Concentra em: '
+            f'{_at_txt}. Não é erro de cálculo, é qualidade do dado grátis. '
+            f'<b>A solução é reativar a Twelve Data</b> nos Secrets — feed real, sem '
+            f'velas achatadas. Até lá esses empates saem do denominador (não contam '
+            f'contra você), mas representam resultados que o app não conseguiu ler.'
+            f'</div></div>', unsafe_allow_html=True)
 
     # Sinais gravados antes de existir "valor por entrada" — ou com valor zerado —
     # não entram no cálculo financeiro. Antes sumiam sem explicação nenhuma.
