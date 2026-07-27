@@ -3128,6 +3128,26 @@ def reapurar_empates(hist_):
     return (corr, emp, semdado)
 
 
+# RESOLUÇÃO RÁPIDA DO RESULTADO. O dado do ciclo é buscado UMA vez por vela
+# (cache por ck), mas o feed gratuito chega com minutos de atraso: a vela da
+# entrada só aparece no meio da vela SEGUINTE, e o resultado ficava preso até a
+# próxima virada (~15-20 min depois da expiração). Havendo entrada EXPIRADA sem
+# resultado, refaz uma busca leve — só os ativos pendentes, no máximo a cada
+# 90s — e o resultado (e o alerta no Telegram) sai assim que o feed publica a
+# vela. Custo: ~1 crédito por tentativa, dentro do orçamento normal.
+_pend_exp = {h["asset"] for h in hist_load()
+             if h.get("res") is None and h.get("tf") == minutes
+             and pd.Timestamp(h["ts"]).timestamp() + minutes * 60 < now.timestamp() - 5}
+if _pend_exp and TD_KEY and (time.time() - st.session_state.get("res_fetch_t", 0.0)) >= 90:
+    st.session_state["res_fetch_t"] = time.time()
+    _fx_p = sorted(n for n in _pend_exp
+                   if any(a["name"] == n and a["type"] == "fx" for a in ASSETS))
+    if _fx_p:
+        _got_p = td_fetch(_fx_p, interval)          # respeita o orçamento por minuto
+        for _n, _d in _got_p.items():
+            if _d is not None and len(_d):
+                data[_n] = _d                        # dado mais fresco só p/ apuração
+
 hist_todos = record_and_resolve(entries_todos, data, minutes, window_open)
 hist = [h for h in hist_todos if not h.get("bloq")]
 hist_cortados = [h for h in hist_todos if h.get("bloq")]
