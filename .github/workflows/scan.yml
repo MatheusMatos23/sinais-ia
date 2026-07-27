@@ -1,8 +1,11 @@
 name: Kairo scanner de fundo
 
+# Cron deslocado 1 min APOS a virada da vela M15 (:01/:16/:31/:46): o scanner
+# roda logo depois de a vela fechar e o historico fica quase em tempo real.
+# O atraso do GitHub continua coberto pelo backfill forward-only do scan_job.
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "1,16,31,46 * * * *"
   workflow_dispatch: {}
 
 concurrency:
@@ -25,4 +28,7 @@ jobs:
           TWELVE_DATA_KEY: ${{ secrets.TWELVE_DATA_KEY }}
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           GIST_ID: ${{ secrets.GIST_ID }}
+          # opcionais — sem eles o resumo diario simplesmente nao envia
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python scan_job.py
