@@ -483,9 +483,20 @@ def main():
     vistos = {(h.get("asset"), h.get("ck"), h.get("tf")) for h in hist}
     dirty = podados > 0
 
-    dados = td_fetch(key, PARES, outputsize=250)
-    if not dados:
-        log("TD não devolveu dados — abortando sem gravar"); sys.exit(1)
+    # ECONOMIA DE CRÉDITOS (diagnóstico do atraso >15min): o scanner gastava 7
+    # créditos a cada 15 min, 24/7 = 672 dos 800 diários — na MESMA chave do
+    # app. À tarde o teto chegava, a TD recusava e o app caía para o yfinance
+    # (fonte mais atrasada), inflando o lag dos sinais. Com a corretora fechada
+    # para TODOS os pares (16h-22h BRT e fim de semana), nenhuma vela seria
+    # registrada mesmo (a grade veta) — buscar cotação era desperdício puro.
+    _agora_chk = pd.Timestamp(datetime.now(timezone.utc)).tz_localize(None)
+    if not any(aberto_na_corretora(nome, _agora_chk) for nome in PARES):
+        log("corretora fechada para todos os pares — sem busca de cotação (economia de créditos).")
+        dados = {}
+    else:
+        dados = td_fetch(key, PARES, outputsize=250)
+        if not dados:
+            log("TD não devolveu dados — abortando sem gravar"); sys.exit(1)
 
     agora = pd.Timestamp(datetime.now(timezone.utc)).tz_localize(None)
     per = TF_MIN * 60
