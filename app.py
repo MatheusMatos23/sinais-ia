@@ -2998,6 +2998,66 @@ def record_and_resolve(entries, data, minutes, na_janela):
 # seja apurado. `hist` — a lista que alimenta Resultado, Desempenho e Histórico —
 # vê só o que virou entrada de verdade; misturar o cortado ali inflaria a
 # amostra com operações que você nunca fez.
+def reapurar_empates(hist_):
+    """
+    Re-apura os empates buscando as velas reais na Twelve Data. O yfinance às
+    vezes achata a vela (abertura == fechamento) e o app grava "empate" quando
+    na corretora houve vitória ou derrota. A TD é feed consolidado e não achata.
+    Retorna (corrigidas, empate_confirmado, sem_dado) ou None sem chave TD.
+
+    HONESTIDADE: o resultado que liquida a opção é o da CORRETORA, que não temos.
+    A TD é a melhor aproximação real disponível — elimina o artefato de vela
+    achatada, mas pode divergir da Bullex por uma fração de pip numa vela mínima.
+    Cada operação corrigida fica marcada com a fonte "twelvedata (re-apurado)".
+    """
+    if not TD_KEY:
+        return None
+    alvos = [h for h in hist_ if h.get("res") == "empate"]
+    if not alvos:
+        return (0, 0, 0)
+    # uma busca por ativo/timeframe cobre todos os empates daquele par
+    _IV = {1: "1m", 5: "5m", 15: "15m"}
+    por_tf = {}
+    for h in alvos:
+        por_tf.setdefault(h.get("tf") or 5, set()).add(h["asset"])
+    dados = {}
+    for tf, ativos in por_tf.items():
+        got = td_fetch(tuple(sorted(ativos)), _IV.get(tf, "5m"), outputsize=5000)
+        for k, v in got.items():
+            dados[(k, tf)] = v
+    corr = emp = semdado = 0
+    changed = False
+    for h in alvos:
+        df = dados.get((h["asset"], h.get("tf") or 5))
+        if df is None:
+            semdado += 1
+            continue
+        ts = pd.Timestamp(h["ts"])
+        ts = ts.tz_localize(None) if ts.tzinfo else ts
+        if ts not in df.index:
+            semdado += 1
+            continue
+        row = df.loc[ts]
+        op, cl = float(row["Open"]), float(row["Close"])
+        h["ap_open"] = round(op, 6)
+        h["ap_close"] = round(cl, 6)
+        h["ap_var"] = round(cl - op, 6)
+        h["ap_high"] = round(float(row["High"]), 6)
+        h["ap_low"] = round(float(row["Low"]), 6)
+        h["ap_src"] = "twelvedata (re-apurado)"
+        h["emp_suspeito"] = False
+        if cl == op:
+            emp += 1                              # empate confirmado pelo feed bom
+        else:
+            venceu = (cl > op) == (h["dir"] == "COMPRA")
+            h["res"] = "ganhou" if venceu else "perdeu"
+            corr += 1
+        changed = True
+    if changed:
+        hist_save(hist_)
+    return (corr, emp, semdado)
+
+
 hist_todos = record_and_resolve(entries_todos, data, minutes, window_open)
 hist = [h for h in hist_todos if not h.get("bloq")]
 hist_cortados = [h for h in hist_todos if h.get("bloq")]
@@ -3577,6 +3637,43 @@ with tab_res:
             f'velas achatadas. Até lá esses empates saem do denominador (não contam '
             f'contra você), mas representam resultados que o app não conseguiu ler.'
             f'</div></div>', unsafe_allow_html=True)
+        # Re-apuração pela Twelve Data: só aparece com a chave ativa.
+        _n_emp = len([h for h in hist if h.get("res") == "empate"])
+        if TD_KEY and _n_emp:
+            _r1, _r2 = st.columns([1.4, 3], vertical_alignment="center")
+            with _r1:
+                if st.button(f"Re-apurar {_n_emp} empate(s) com Twelve Data",
+                             key="btn_reapurar"):
+                    _res = reapurar_empates(hist_todos)
+                    if _res is None:
+                        st.warning("Chave da Twelve Data não configurada.")
+                    else:
+                        _c, _e, _s = _res
+                        st.session_state["reap_msg"] = (
+                            f"{_c} viraram vitória/derrota real · {_e} eram empate "
+                            f"de verdade · {_s} sem dado na TD.")
+                        st.rerun()
+            with _r2:
+                st.caption("Busca cada vela na Twelve Data (feed real) e recalcula. "
+                           "As corrigidas passam a contar no forward test com a fonte "
+                           "«twelvedata (re-apurado)». A TD não é o feed exato da "
+                           "corretora, mas elimina as velas achatadas do yfinance.")
+            if st.session_state.get("reap_msg"):
+                st.success(st.session_state.pop("reap_msg"))
+    elif TD_KEY and [h for h in hist if h.get("res") == "empate"]:
+        # há empates mas nenhum marcado suspeito (histórico antigo, sem high/low):
+        # ainda vale re-apurar, pois o yfinance pode tê-los achatado sem registro.
+        _n_emp = len([h for h in hist if h.get("res") == "empate"])
+        if st.button(f"Re-apurar {_n_emp} empate(s) com Twelve Data", key="btn_reapurar2"):
+            _res = reapurar_empates(hist_todos)
+            if _res:
+                _c, _e, _s = _res
+                st.session_state["reap_msg"] = (
+                    f"{_c} viraram vitória/derrota real · {_e} confirmados empate · "
+                    f"{_s} sem dado.")
+                st.rerun()
+        if st.session_state.get("reap_msg"):
+            st.success(st.session_state.pop("reap_msg"))
 
     # Sinais gravados antes de existir "valor por entrada" — ou com valor zerado —
     # não entram no cálculo financeiro. Antes sumiam sem explicação nenhuma.
