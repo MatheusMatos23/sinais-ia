@@ -1566,6 +1566,18 @@ def telegram_send(txt):
         return False               # alerta é conforto; o sinal é o produto
 
 
+# Visual "canal profissional" das mensagens: separador + bandeiras por par.
+TG_SEP = "━━━━━━━━━━━━━━"
+TG_FLAGS = {"EUR/USD": "🇪🇺🇺🇸", "GBP/USD": "🇬🇧🇺🇸", "USD/JPY": "🇺🇸🇯🇵",
+            "AUD/USD": "🇦🇺🇺🇸", "USD/CAD": "🇺🇸🇨🇦", "EUR/GBP": "🇪🇺🇬🇧",
+            "EUR/JPY": "🇪🇺🇯🇵", "USD/CHF": "🇺🇸🇨🇭", "NZD/USD": "🇳🇿🇺🇸",
+            "BTC/USD": "₿", "ETH/USD": "⟠"}
+
+
+def tg_flag(nome):
+    return TG_FLAGS.get(nome, "💱")
+
+
 CFG_PADRAO = {
     "tf": "5", "estrategias": None, "forca": "FRACA", "mercado": "Tudo",
     "horas_op": None,
@@ -2336,9 +2348,10 @@ dados_atrasados = bool(sem_vela) or (lag_min is not None and lag_min > (2 * minu
 if window_open and dados_atrasados and scan_list:
     if not st.session_state.get("tg_stale_on"):
         st.session_state["tg_stale_on"] = True
-        telegram_send("⚠️ <b>Dados atrasados na virada da vela</b>\n"
-                      "A entrada desta vela pode não sair/registrar com dado "
-                      "fresco. Fonte em fallback — confira o diagnóstico no app.")
+        telegram_send(f"⚠️ <b>DADOS ATRASADOS NA VIRADA</b>\n{TG_SEP}\n"
+                      f"📡 Fonte em fallback — a entrada desta vela pode não "
+                      f"sair/registrar com dado fresco.\n"
+                      f"🔍 Confira o diagnóstico no app antes de operar.")
 elif not dados_atrasados:
     st.session_state["tg_stale_on"] = False
 
@@ -2461,15 +2474,17 @@ operando = sistema_on and dentro_janela and not _bloqueio_perda and not _cb_ativ
 # dia. Quando o estado limpa, o marcador reseta sozinho.
 if _cb_ativo and st.session_state.get("tg_cb") != _cb_msg:
     st.session_state["tg_cb"] = _cb_msg
-    telegram_send(f"🛑 <b>Circuit breaker disparou</b>\n{_cb_msg}\n"
-                  f"Nenhuma entrada nova é gerada até o fim da pausa.")
+    telegram_send(f"🛑 <b>CIRCUIT BREAKER</b> 🛑\n{TG_SEP}\n{_cb_msg}\n"
+                  f"⛔ Entradas pausadas até o fim da pausa.\n"
+                  f"🧠 Proteção automática: sequência de losses na coorte.")
 elif not _cb_ativo:
     st.session_state.pop("tg_cb", None)
 _dia_tg = br(now).date().isoformat()
 if _bloqueio_perda and st.session_state.get("tg_perda") != _dia_tg:
     st.session_state["tg_perda"] = _dia_tg
-    telegram_send(f"🛑 <b>Limite de perda diária atingido</b> "
-                  f"({nbf(_perda_hoje, 2)})\nO sistema parou de gerar entradas por hoje.")
+    telegram_send(f"🛑 <b>LIMITE DIÁRIO ATINGIDO</b> 🛑\n{TG_SEP}\n"
+                  f"💸 Resultado do dia: {nbf(_perda_hoje, 2)}\n"
+                  f"⛔ Sem novas entradas até amanhã. Disciplina é o sistema.")
 
 entries = list(agg.values()) if operando else []
 # CONFLITO DE SINAIS (auditoria S-01): quando estratégias apontam COMPRA e VENDA
@@ -2905,26 +2920,40 @@ def record_and_resolve(entries, data, minutes, na_janela):
             # alertado — celular e histórico contam a mesma história.
             hist[-1]["tg"] = bool(_alerta_tg)
             if _alerta_tg:
-                _cf = "\n⚠ Atenção: há sinal na direção OPOSTA nesta vela." if e.get("conflito") else ""
-                _seta = "🟢▲" if e["dir"] == "COMPRA" else "🔴▼"
+                _cf = (f"\n⚠️ <i>Atenção: há sinal na direção OPOSTA nesta vela.</i>"
+                       if e.get("conflito") else "")
+                _dir_ico = "🟢 <b>COMPRA</b> ⬆️" if e["dir"] == "COMPRA" else "🔴 <b>VENDA</b> ⬇️"
                 _exp = hm_exp(start, minutes).split('→')[-1].strip()
-                _ests = "+".join(_short(s) for s in e["strats"])
+                _ests = " + ".join(_short(s) for s in e["strats"])
+                _forca_ico = {"FORTE": "🔥🔥🔥", "MEDIA": "🔥🔥", "FRACA": "🔥"}.get(e["force"], "")
                 if e.get("premium"):
                     _q = qualidade.get(nome, {})
+                    _qtxt = ""
+                    if _q.get("corpo") is not None:
+                        _qtxt += f"\n📏 Corpo da vela: {nbf(_q['corpo'], 0)}%"
+                    if _q.get("atrp") is not None:
+                        _qtxt += f" · ATR p{nbf(_q['atrp'], 0)}"
                     telegram_send(
-                        f"💎 <b>SINAL PREMIUM</b>\n"
-                        f"{_seta} <b>{nome} — {e['dir']}</b> · força {e['force'].lower()}\n"
-                        f"🕐 vela {hm(start)} → expira {_exp}\n"
-                        f"📐 {len(e['strats'])} estratégias concordam ({_ests})"
-                        + (f" · corpo {nbf(_q['corpo'], 0)}%" if _q.get("corpo") is not None else "")
-                        + (f" · ATR p{nbf(_q['atrp'], 0)}" if _q.get("atrp") is not None else "")
-                        + f"\n⏱ Entre nos primeiros {ENTRY_WINDOW}s da vela.{_cf}")
+                        f"💎⚡ <b>KAIRO PREMIUM</b> ⚡💎\n"
+                        f"{TG_SEP}\n"
+                        f"{tg_flag(nome)} <b>{nome}</b>\n"
+                        f"{_dir_ico}\n"
+                        f"💪 Força: {FL.get(e['force'], e['force']).lower()} {_forca_ico}\n"
+                        f"{TG_SEP}\n"
+                        f"⏰ Entrada: <b>{hm(start)}</b> (M{minutes})\n"
+                        f"🏁 Expiração: <b>{_exp}</b>\n"
+                        f"🎯 Confluência: {len(e['strats'])} estratégias ({_ests})"
+                        f"{_qtxt}\n"
+                        f"{TG_SEP}\n"
+                        f"⏱ Válido nos primeiros {ENTRY_WINDOW}s da vela{_cf}")
                 else:
                     telegram_send(
-                        f"⚡ Sinal · {_seta} <b>{nome} — {e['dir']}</b> "
-                        f"({e['force'].lower()})\n"
-                        f"🕐 vela {hm(start)} → expira {_exp} · {_ests}\n"
-                        f"⏱ Primeiros {ENTRY_WINDOW}s da vela.{_cf}")
+                        f"⚡ <b>KAIRO SINAL</b>\n"
+                        f"{TG_SEP}\n"
+                        f"{tg_flag(nome)} <b>{nome}</b> · {_dir_ico}\n"
+                        f"💪 {FL.get(e['force'], e['force']).lower()} {_forca_ico} · 🎯 {_ests}\n"
+                        f"⏰ <b>{hm(start)}</b> → 🏁 <b>{_exp}</b> (M{minutes})\n"
+                        f"⏱ Primeiros {ENTRY_WINDOW}s da vela{_cf}")
     for h in hist:                                        # apura o que já fechou
         if h["res"] is not None:
             continue
@@ -2971,30 +3000,43 @@ def record_and_resolve(entries, data, minutes, na_janela):
             # diferencia a classe: 💎 premium · ⚡ normal. Roda UMA vez por
             # entrada (res transita de None para definitivo).
             if h.get("tg", h.get("premium")):
-                _ico = {"ganhou": "✅ <b>GANHOU</b>", "perdeu": "❌ <b>PERDEU</b>",
-                        "empate": "↔ <b>EMPATE</b> (reembolso)"}[h["res"]]
-                _cls = "💎" if h.get("premium") else "⚡"
-                # PLACAR DO DIA na própria mensagem: acompanha o dia sem abrir
-                # nada. Conta só o resolvido HOJE (Brasília) no timeframe atual.
+                _ico = {"ganhou": "✅ <b>WIN</b> 🎉", "perdeu": "❌ <b>LOSS</b>",
+                        "empate": "🔄 <b>EMPATE</b> (reembolso)"}[h["res"]]
+                _cab = "💎 <b>RESULTADO PREMIUM</b>" if h.get("premium") else "⚡ <b>RESULTADO</b>"
+                _dir_ico = "🟢" if h["dir"] == "COMPRA" else "🔴"
+                # PLACAR DO DIA + sequência: conta só o resolvido HOJE (Brasília)
+                # no timeframe atual, em ordem, para medir a série em andamento.
                 _dia_ = br(now).date()
-                _dw = _dl_ = _pw = _pl = 0
-                for _r in hist:
-                    if (_r.get("res") in ("ganhou", "perdeu")
-                            and _r.get("tf") == minutes
-                            and br(_r["ts"]).date() == _dia_):
-                        if _r["res"] == "ganhou":
-                            _dw += 1
-                            _pw += 1 if _r.get("premium") else 0
-                        else:
-                            _dl_ += 1
-                            _pl += 1 if _r.get("premium") else 0
-                _placar = f"\nHoje: {_dw}W · {_dl_}L"
+                _do_dia = sorted((_r for _r in hist
+                                  if _r.get("res") in ("ganhou", "perdeu")
+                                  and _r.get("tf") == minutes
+                                  and br(_r["ts"]).date() == _dia_),
+                                 key=lambda _r: _r["ts"])
+                _dw = sum(1 for _r in _do_dia if _r["res"] == "ganhou")
+                _dl_ = len(_do_dia) - _dw
+                _pw = sum(1 for _r in _do_dia if _r.get("premium") and _r["res"] == "ganhou")
+                _pl = sum(1 for _r in _do_dia if _r.get("premium") and _r["res"] == "perdeu")
+                _streak = 0
+                for _r in reversed(_do_dia):
+                    if _r["res"] == "ganhou":
+                        _streak += 1
+                    else:
+                        break
+                _tx_dia = f" ({_dw / (_dw + _dl_) * 100:.0f}%)".replace(".", ",") if (_dw + _dl_) else ""
+                _placar = f"📊 Hoje: ✅ {_dw} · ❌ {_dl_}{_tx_dia}"
                 if _pw or _pl:
-                    _placar += f" · 💎 {_pw}W · {_pl}L"
+                    _placar += f"\n💎 Premium: ✅ {_pw} · ❌ {_pl}"
+                if _streak >= 2:
+                    _placar += f"\n🔥 {_streak} WINs seguidos!"
                 telegram_send(
-                    f"{_cls} <b>{h['asset']}</b> {h['dir']} — {_ico}\n"
-                    f"vela {hm(h['ts'])} · abriu {fmt_price(h['asset'], op)} · "
-                    f"fechou {fmt_price(h['asset'], cl)}{_placar}")
+                    f"{_cab}\n"
+                    f"{TG_SEP}\n"
+                    f"{tg_flag(h['asset'])} <b>{h['asset']}</b> {_dir_ico} {h['dir']}\n"
+                    f"{_ico}\n"
+                    f"📈 {fmt_price(h['asset'], op)} → {fmt_price(h['asset'], cl)} "
+                    f"· vela {hm(h['ts'])}\n"
+                    f"{TG_SEP}\n"
+                    f"{_placar}")
     if len(hist) > 3000:
         del hist[:len(hist) - 3000]
     if changed:
@@ -3163,10 +3205,14 @@ if radar_ativo:
     _cand = [r for r in radar if r.get("conc", 1) >= 2 and abs(r["score"]) >= MIN_SCORE]
     if _cand and st.session_state.get("tg_radar_ck") != candle_key(minutes):
         st.session_state["tg_radar_ck"] = candle_key(minutes)
-        _txt = "\n".join(f"• {r['ativo']} {r['dir']} provisório "
-                         f"({r['conc']} estratégias)" for r in _cand[:2])
-        telegram_send(f"👀 <b>Radar</b> — {int(secs_to_next)}s para a virada\n{_txt}\n"
-                      f"Pode virar entrada na próxima vela. Atenção — ainda não é sinal.")
+        _txt = "\n".join(
+            f"{tg_flag(r['ativo'])} <b>{r['ativo']}</b> "
+            f"{'🟢' if r['dir'] == 'COMPRA' else '🔴'} {r['dir']} provisório "
+            f"· {r['conc']} estratégias" for r in _cand[:2])
+        telegram_send(f"👀 <b>RADAR</b> — {int(secs_to_next)}s para a virada\n"
+                      f"{TG_SEP}\n{_txt}\n{TG_SEP}\n"
+                      f"⚠️ <i>Pode virar entrada na próxima vela — ainda NÃO é sinal.</i>\n"
+                      f"📲 Prepare a corretora.")
 
     # ---- medição da conversão ----
     # Sem isto o radar seria julgado por impressão. Guarda os candidatos desta

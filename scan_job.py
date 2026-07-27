@@ -114,6 +114,14 @@ def aberto_na_corretora(nome, ts_utc):
 
 
 # ------------------------------- TELEGRAM ------------------------------------
+TG_SEP = "━━━━━━━━━━━━━━"
+
+
+def _pt(v, casas=1):
+    """número -> texto pt-BR (vírgula decimal)."""
+    return f"{v:.{casas}f}".replace(".", ",")
+
+
 def telegram_send(txt):
     """Resumo pelo bot. Sem os secrets vira no-op — nada aqui depende disso."""
     tk = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -195,18 +203,21 @@ def resumo_diario(hist, estado):
         np_ = len(prem)
         wrp = wp / np_ * 100
         evp = (wp / np_ * (1 + PAYOUT) - 1) * 100
-        lp = (f"💎 <b>Premium: {wp}W · {np_ - wp}L — {wrp:.1f}%</b> "
-              f"(BE {be:.2f}%) · EV {evp:+.1f}%/op")
+        lp = (f"💎 <b>PREMIUM</b>\n✅ {wp} · ❌ {np_ - wp} — <b>{_pt(wrp)}%</b> "
+              f"· EV {'+' if evp > 0 else ''}{_pt(evp)}%/op")
     else:
-        lp = "💎 Premium: nenhuma operação hoje"
+        lp = "💎 <b>PREMIUM</b>\nSem operações hoje"
     if n:
         wr = w / n * 100
         ev = (w / n * (1 + PAYOUT) - 1) * 100
-        linha = (f"Geral: {w}W · {n - w}L · {emp}E — {wr:.1f}% · EV {ev:+.1f}%/op")
+        linha = (f"⚡ <b>GERAL</b>\n✅ {w} · ❌ {n - w} · 🔄 {emp} — "
+                 f"{_pt(wr)}% · EV {'+' if ev > 0 else ''}{_pt(ev)}%/op")
     else:
-        linha = f"Geral: nenhuma operação resolvida ({emp} empate(s))"
-    telegram_send(f"📊 <b>Kairo — resumo {agora_br:%d/%m}</b>\n{lp}\n{linha}\n"
-                  f"Coorte {COORTE} · registro automático a cada 15 min.")
+        linha = f"⚡ <b>GERAL</b>\nSem operações resolvidas ({emp} empate(s))"
+    telegram_send(f"📊 <b>KAIRO — FECHAMENTO {agora_br:%d/%m}</b> 📊\n"
+                  f"{TG_SEP}\n{lp}\n{TG_SEP}\n{linha}\n{TG_SEP}\n"
+                  f"🎯 Breakeven: {_pt(be, 2)}% · Coorte {COORTE}\n"
+                  f"🤖 Registro automático a cada 15 min")
     estado["ultimo_resumo"] = hoje
     return True
 
@@ -242,14 +253,16 @@ def resumo_semanal(hist, estado):
             ver = "ABAIXO do breakeven ❌ (IC inteiro abaixo)"
         else:
             ver = "inconclusivo — dentro do ruído estatístico"
-        corpo = (f"Geral: {w}W · {n - w}L · {emp}E — {wr:.1f}% · EV {ev:+.1f}%/op\n"
-                 f"IC95: {lo * 100:.1f}–{hi * 100:.1f}% · BE {be * 100:.2f}%\n"
-                 f"Veredito: <b>{ver}</b>")
+        corpo = (f"✅ {w} · ❌ {n - w} · 🔄 {emp} — <b>{_pt(wr)}%</b> · "
+                 f"EV {'+' if ev > 0 else ''}{_pt(ev)}%/op\n"
+                 f"📐 IC95: {_pt(lo * 100)}–{_pt(hi * 100)}% · BE {_pt(be * 100, 2)}%\n"
+                 f"🧭 Veredito: <b>{ver}</b>")
         if np_:
-            corpo += (f"\n💎 Premium: {wp}W · {np_ - wp}L — {wp / np_ * 100:.1f}%")
-    telegram_send(f"📅 <b>Kairo — semana {chave}</b>\n{corpo}\n"
-                  f"Semana estatística: taxa alta com IC cruzando o breakeven "
-                  f"ainda é ruído — só o IC inteiro acima conta como vantagem.")
+            corpo += (f"\n{TG_SEP}\n💎 <b>PREMIUM</b>: ✅ {wp} · ❌ {np_ - wp} "
+                      f"— {_pt(wp / np_ * 100)}%")
+    telegram_send(f"📅 <b>KAIRO — SEMANA {chave}</b> 📅\n{TG_SEP}\n{corpo}\n{TG_SEP}\n"
+                  f"🧠 Taxa alta com IC cruzando o breakeven ainda é ruído — "
+                  f"só o IC inteiro acima conta como vantagem.")
     estado["ultimo_semanal"] = chave
     return True
 
@@ -265,15 +278,17 @@ def _status_txt(hist):
     if n:
         wr = w / n * 100
         ev = (w / n * (1 + PAYOUT) - 1) * 100
-        linha = f"Hoje: {w}W · {n - w}L · {emp}E — {wr:.1f}% · EV {ev:+.1f}%/op"
+        linha = (f"📊 Hoje: ✅ {w} · ❌ {n - w} · 🔄 {emp} — <b>{_pt(wr)}%</b> "
+                 f"· EV {'+' if ev > 0 else ''}{_pt(ev)}%/op")
         if np_:
-            linha += f"\n💎 Premium: {wp}W · {np_ - wp}L"
+            linha += f"\n💎 Premium: ✅ {wp} · ❌ {np_ - wp}"
     else:
-        linha = f"Hoje: nenhuma operação resolvida ({emp} empate(s))"
-    return (f"📡 <b>Kairo — status {agora_br:%H:%M}</b>\n{linha}\n"
-            f"Pendentes: {pend} · registros no histórico: {len(hist)}\n"
-            f"Último registro: {ult[:16].replace('T', ' ')} UTC\n"
-            f"Coorte {COORTE} · scanner roda a cada 15 min (:01/:16/:31/:46).")
+        linha = f"📊 Hoje: sem operações resolvidas ({emp} empate(s))"
+    return (f"📡 <b>KAIRO STATUS · {agora_br:%H:%M}</b> 📡\n{TG_SEP}\n{linha}\n"
+            f"{TG_SEP}\n"
+            f"⏳ Pendentes: {pend} · 📚 Registros: {len(hist)}\n"
+            f"🕐 Último: {ult[:16].replace('T', ' ')} UTC\n"
+            f"🤖 Coorte {COORTE} · scanner :01/:16/:31/:46")
 
 
 def responde_comandos(hist, estado):
