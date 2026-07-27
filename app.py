@@ -3015,16 +3015,36 @@ def reapurar_empates(hist_):
     alvos = [h for h in hist_ if h.get("res") == "empate"]
     if not alvos:
         return (0, 0, 0)
-    # uma busca por ativo/timeframe cobre todos os empates daquele par
-    _IV = {1: "1m", 5: "5m", 15: "15m"}
+    # BUSCA DEDICADA — não usa td_fetch de propósito, por dois motivos que
+    # deixavam a re-apuração voltar "sem dado" para tudo:
+    #   1) td_fetch respeita o orçamento por minuto, que o scanner ao vivo já
+    #      gastou no mesmo rerun — sobrava zero crédito e a busca voltava vazia.
+    #   2) outputsize=5000 gerava um JSON enorme que estourava o timeout de 9s.
+    # Aqui é uma ação manual e rara: uma consulta por ativo, janela pequena
+    # (os empates são todos recentes), timeout folgado, sem gate de minuto.
+    _IV = {1: "1min", 5: "5min", 15: "15min"}
     por_tf = {}
     for h in alvos:
         por_tf.setdefault(h.get("tf") or 5, set()).add(h["asset"])
+    import requests
     dados = {}
     for tf, ativos in por_tf.items():
-        got = td_fetch(tuple(sorted(ativos)), _IV.get(tf, "5m"), outputsize=5000)
-        for k, v in got.items():
-            dados[(k, tf)] = v
+        for sym in sorted(ativos):
+            try:
+                r = requests.get(
+                    "https://api.twelvedata.com/time_series",
+                    params={"symbol": sym, "interval": _IV.get(tf, "5min"),
+                            "outputsize": 5000, "timezone": "UTC",
+                            "apikey": TD_KEY, "format": "JSON"}, timeout=20)
+                j = r.json()
+            except Exception:
+                continue
+            if isinstance(j, dict) and "values" in j:
+                df = _td_to_df(j["values"])
+                if df is not None:
+                    dados[(sym, tf)] = df
+        # cada símbolo consumiu 1 crédito; registra no orçamento diário
+        td_budget(len(ativos))
     corr = emp = semdado = 0
     changed = False
     for h in alvos:
