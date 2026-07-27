@@ -2331,6 +2331,16 @@ def data_diag(data_map):
 
 lag_min, lag_asset, sem_vela, vela_esperada, lag_fonte, lag_ativo = data_diag(data)
 dados_atrasados = bool(sem_vela) or (lag_min is not None and lag_min > (2 * minutes + 1))
+# Aviso de dado atrasado NA VIRADA — só na transição ok→atrasado e só com a
+# corretora aberta (scan_list vazio no fim de semana silenciaria de graça).
+if window_open and dados_atrasados and scan_list:
+    if not st.session_state.get("tg_stale_on"):
+        st.session_state["tg_stale_on"] = True
+        telegram_send("⚠️ <b>Dados atrasados na virada da vela</b>\n"
+                      "A entrada desta vela pode não sair/registrar com dado "
+                      "fresco. Fonte em fallback — confira o diagnóstico no app.")
+elif not dados_atrasados:
+    st.session_state["tg_stale_on"] = False
 
 # Corte duro de frescor. A estratégia lê a ÚLTIMA VELA FECHADA. Se a vela que já
 # deveria ter fechado ainda não chegou, o que o motor chama de "vela anterior" não
@@ -2444,6 +2454,22 @@ _cb_ativo, _cb_msg, _cb_n_aval, _cb_w = (
     if cb_on else (False, "", 0, 0))
 
 operando = sistema_on and dentro_janela and not _bloqueio_perda and not _cb_ativo
+
+# EVENTOS DE RISCO NO TELEGRAM — os avisos que importam justamente quando você
+# NÃO está olhando a tela. Deduplicados por estado: o circuit breaker avisa uma
+# vez por disparo (a mensagem muda a cada pausa) e o limite de perda uma vez por
+# dia. Quando o estado limpa, o marcador reseta sozinho.
+if _cb_ativo and st.session_state.get("tg_cb") != _cb_msg:
+    st.session_state["tg_cb"] = _cb_msg
+    telegram_send(f"🛑 <b>Circuit breaker disparou</b>\n{_cb_msg}\n"
+                  f"Nenhuma entrada nova é gerada até o fim da pausa.")
+elif not _cb_ativo:
+    st.session_state.pop("tg_cb", None)
+_dia_tg = br(now).date().isoformat()
+if _bloqueio_perda and st.session_state.get("tg_perda") != _dia_tg:
+    st.session_state["tg_perda"] = _dia_tg
+    telegram_send(f"🛑 <b>Limite de perda diária atingido</b> "
+                  f"({nbf(_perda_hoje, 2)})\nO sistema parou de gerar entradas por hoje.")
 
 entries = list(agg.values()) if operando else []
 # CONFLITO DE SINAIS (auditoria S-01): quando estratégias apontam COMPRA e VENDA
@@ -2948,10 +2974,27 @@ def record_and_resolve(entries, data, minutes, na_janela):
                 _ico = {"ganhou": "✅ <b>GANHOU</b>", "perdeu": "❌ <b>PERDEU</b>",
                         "empate": "↔ <b>EMPATE</b> (reembolso)"}[h["res"]]
                 _cls = "💎" if h.get("premium") else "⚡"
+                # PLACAR DO DIA na própria mensagem: acompanha o dia sem abrir
+                # nada. Conta só o resolvido HOJE (Brasília) no timeframe atual.
+                _dia_ = br(now).date()
+                _dw = _dl_ = _pw = _pl = 0
+                for _r in hist:
+                    if (_r.get("res") in ("ganhou", "perdeu")
+                            and _r.get("tf") == minutes
+                            and br(_r["ts"]).date() == _dia_):
+                        if _r["res"] == "ganhou":
+                            _dw += 1
+                            _pw += 1 if _r.get("premium") else 0
+                        else:
+                            _dl_ += 1
+                            _pl += 1 if _r.get("premium") else 0
+                _placar = f"\nHoje: {_dw}W · {_dl_}L"
+                if _pw or _pl:
+                    _placar += f" · 💎 {_pw}W · {_pl}L"
                 telegram_send(
                     f"{_cls} <b>{h['asset']}</b> {h['dir']} — {_ico}\n"
                     f"vela {hm(h['ts'])} · abriu {fmt_price(h['asset'], op)} · "
-                    f"fechou {fmt_price(h['asset'], cl)}")
+                    f"fechou {fmt_price(h['asset'], cl)}{_placar}")
     if len(hist) > 3000:
         del hist[:len(hist) - 3000]
     if changed:
@@ -3088,6 +3131,7 @@ if radar_ativo:
         except Exception:
             continue
         melhor = None
+        _vals = []                                   # scores provisórios (p/ confluência)
         for nm in sel_strats:
             try:
                 sc = score_of(nm, dp, interval)
@@ -3098,15 +3142,31 @@ if radar_ativo:
             v = float(sc.iloc[-1])
             if not math.isfinite(v):
                 continue
+            _vals.append(v)
             if melhor is None or abs(v) > abs(melhor[1]):
                 melhor = (nm, v)
         if melhor is None or abs(melhor[1]) < MIN_SCORE * 0.75:
             continue                                 # longe demais: não é candidato
+        # confluência PROVISÓRIA: quantas estratégias já apontam a mesma direção
+        _conc = sum(1 for _v in _vals
+                    if abs(_v) >= MIN_SCORE * 0.75 and (_v > 0) == (melhor[1] > 0))
         radar.append({"ativo": nome, "estrategia": melhor[0], "score": melhor[1],
                       "pct": min(999.0, abs(melhor[1]) / MIN_SCORE * 100.0),
                       "dir": "COMPRA" if melhor[1] > 0 else "VENDA",
-                      "px": px, "var": px - ab})
+                      "conc": _conc, "px": px, "var": px - ab})
     radar.sort(key=lambda r: r["pct"], reverse=True)
+
+    # PRÉ-AVISO TELEGRAM: candidato com confluência provisória (>=2 estratégias
+    # na mesma direção e score já ACIMA do limiar cheio) a ~60s da virada. É
+    # aviso de ATENÇÃO, nunca de entrada — o radar trabalha com vela parcial e
+    # parte dos candidatos não confirma. No máximo 1 aviso por vela, 2 ativos.
+    _cand = [r for r in radar if r.get("conc", 1) >= 2 and abs(r["score"]) >= MIN_SCORE]
+    if _cand and st.session_state.get("tg_radar_ck") != candle_key(minutes):
+        st.session_state["tg_radar_ck"] = candle_key(minutes)
+        _txt = "\n".join(f"• {r['ativo']} {r['dir']} provisório "
+                         f"({r['conc']} estratégias)" for r in _cand[:2])
+        telegram_send(f"👀 <b>Radar</b> — {int(secs_to_next)}s para a virada\n{_txt}\n"
+                      f"Pode virar entrada na próxima vela. Atenção — ainda não é sinal.")
 
     # ---- medição da conversão ----
     # Sem isto o radar seria julgado por impressão. Guarda os candidatos desta

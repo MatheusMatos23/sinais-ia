@@ -22,13 +22,13 @@ import json
 import math
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
 
-from strategies import add_indicators, score_of, classify
+from strategies import add_indicators, score_of, classify, wilson_ci
 # Auditoria C-01: grade da corretora em fonte ÚNICA, compartilhada com o app.
 from grade_core import GRADE_BULLEX_TXT, parse_grade, aberto_em
 
@@ -130,36 +130,58 @@ def telegram_send(txt):
         return False
 
 
-def resumo_diario(token, gid, hist):
-    """
-    Uma vez por dia, após as 18h de Brasília: W/L, taxa, EV e premium do dia.
-    O marcador de "já enviei hoje" vive no Gist (GIST_STATE) porque o runner do
-    Actions é efêmero — sem estado externo, cada execução das 18h+ mandaria o
-    resumo de novo.
-    """
-    agora_br = datetime.now(timezone.utc).astimezone(BR_TZ)
-    if agora_br.hour < 18:
-        return
-    hoje = agora_br.date().isoformat()
+def _dia_br(ts):
+    """ts UTC do histórico -> data (ISO) em Brasília. '' se inválido."""
+    try:
+        t = pd.Timestamp(ts)
+        t = t.tz_localize("UTC") if t.tzinfo is None else t
+        return t.tz_convert(BR_TZ).date().isoformat()
+    except Exception:
+        return ""
+
+
+def estado_load(token, gid):
+    """Estado do scanner (marcadores de resumo, offset do Telegram) no Gist —
+    o runner do Actions é efêmero, sem estado externo tudo repetiria."""
     try:
         r = requests.get(f"https://api.github.com/gists/{gid}", timeout=15,
                          headers={"Authorization": f"Bearer {token}",
                                   "Accept": "application/vnd.github+json"})
         c = r.json().get("files", {}).get(GIST_STATE, {}).get("content")
-        estado = json.loads(c) if c else {}
+        return json.loads(c) if c else {}
     except Exception:
-        estado = {}
+        return {}
+
+
+def estado_save(token, gid, estado):
+    try:
+        requests.patch(f"https://api.github.com/gists/{gid}", timeout=15,
+                       headers={"Authorization": f"Bearer {token}",
+                                "Accept": "application/vnd.github+json"},
+                       json={"files": {GIST_STATE: {"content": json.dumps(estado)}}})
+    except Exception:
+        pass
+
+
+def _placar(regs):
+    """(n, w, empates, prem_n, prem_w) de uma lista de registros."""
+    res = [h for h in regs if h.get("res") in ("ganhou", "perdeu")]
+    w = sum(1 for h in res if h["res"] == "ganhou")
+    emp = sum(1 for h in regs if h.get("res") == "empate")
+    prem = [h for h in res if h.get("premium")]
+    wp = sum(1 for h in prem if h["res"] == "ganhou")
+    return len(res), w, emp, len(prem), wp
+
+
+def resumo_diario(hist, estado):
+    """Uma vez por dia, após as 18h de Brasília. Devolve True se enviou."""
+    agora_br = datetime.now(timezone.utc).astimezone(BR_TZ)
+    if agora_br.hour < 18:
+        return False
+    hoje = agora_br.date().isoformat()
     if estado.get("ultimo_resumo") == hoje:
-        return
-    # recorte do dia (ts em UTC no histórico; dia contado em Brasília)
-    def dia_br(ts):
-        try:
-            t = pd.Timestamp(ts)
-            t = t.tz_localize("UTC") if t.tzinfo is None else t
-            return t.tz_convert(BR_TZ).date().isoformat()
-        except Exception:
-            return ""
-    do_dia = [h for h in hist if dia_br(h.get("ts")) == hoje]
+        return False
+    do_dia = [h for h in hist if _dia_br(h.get("ts")) == hoje]
     res = [h for h in do_dia if h.get("res") in ("ganhou", "perdeu")]
     w = sum(1 for h in res if h["res"] == "ganhou")
     n = len(res)
@@ -186,14 +208,109 @@ def resumo_diario(token, gid, hist):
     telegram_send(f"📊 <b>Kairo — resumo {agora_br:%d/%m}</b>\n{lp}\n{linha}\n"
                   f"Coorte {COORTE} · registro automático a cada 15 min.")
     estado["ultimo_resumo"] = hoje
+    return True
+
+
+def resumo_semanal(hist, estado):
+    """
+    Domingo após as 18h BRT: fecha a semana (últimos 7 dias) com o que o diário
+    não mostra — acumulado, IC de Wilson contra o breakeven e o veredito honesto
+    de "foi sinal ou ruído". Uma vez por semana (marcador no estado).
+    """
+    agora_br = datetime.now(timezone.utc).astimezone(BR_TZ)
+    if agora_br.weekday() != 6 or agora_br.hour < 18:
+        return False
+    iso = agora_br.isocalendar()
+    chave = f"{iso.year}-W{iso.week:02d}"
+    if estado.get("ultimo_semanal") == chave:
+        return False
+    ini = (agora_br.date() - timedelta(days=6)).isoformat()
+    sem = [h for h in hist if _dia_br(h.get("ts")) >= ini]
+    n, w, emp, np_, wp = _placar(sem)
+    be = 1.0 / (1.0 + PAYOUT)
+    if not n:
+        corpo = "Nenhuma operação resolvida na semana."
+    else:
+        wr = w / n * 100
+        ev = (w / n * (1 + PAYOUT) - 1) * 100
+        _, lo, hi = wilson_ci(w, n)
+        if n < 20:
+            ver = "amostra pequena — sem veredito"
+        elif lo > be:
+            ver = "ACIMA do breakeven ✅ (IC inteiro acima)"
+        elif hi < be:
+            ver = "ABAIXO do breakeven ❌ (IC inteiro abaixo)"
+        else:
+            ver = "inconclusivo — dentro do ruído estatístico"
+        corpo = (f"Geral: {w}W · {n - w}L · {emp}E — {wr:.1f}% · EV {ev:+.1f}%/op\n"
+                 f"IC95: {lo * 100:.1f}–{hi * 100:.1f}% · BE {be * 100:.2f}%\n"
+                 f"Veredito: <b>{ver}</b>")
+        if np_:
+            corpo += (f"\n💎 Premium: {wp}W · {np_ - wp}L — {wp / np_ * 100:.1f}%")
+    telegram_send(f"📅 <b>Kairo — semana {chave}</b>\n{corpo}\n"
+                  f"Semana estatística: taxa alta com IC cruzando o breakeven "
+                  f"ainda é ruído — só o IC inteiro acima conta como vantagem.")
+    estado["ultimo_semanal"] = chave
+    return True
+
+
+def _status_txt(hist):
+    """Retrato do momento para o comando /status."""
+    agora_br = datetime.now(timezone.utc).astimezone(BR_TZ)
+    hoje = agora_br.date().isoformat()
+    do_dia = [h for h in hist if _dia_br(h.get("ts")) == hoje]
+    n, w, emp, np_, wp = _placar(do_dia)
+    pend = sum(1 for h in hist if h.get("res") is None)
+    ult = max((str(h.get("ts")) for h in hist), default="—")
+    if n:
+        wr = w / n * 100
+        ev = (w / n * (1 + PAYOUT) - 1) * 100
+        linha = f"Hoje: {w}W · {n - w}L · {emp}E — {wr:.1f}% · EV {ev:+.1f}%/op"
+        if np_:
+            linha += f"\n💎 Premium: {wp}W · {np_ - wp}L"
+    else:
+        linha = f"Hoje: nenhuma operação resolvida ({emp} empate(s))"
+    return (f"📡 <b>Kairo — status {agora_br:%H:%M}</b>\n{linha}\n"
+            f"Pendentes: {pend} · registros no histórico: {len(hist)}\n"
+            f"Último registro: {ult[:16].replace('T', ' ')} UTC\n"
+            f"Coorte {COORTE} · scanner roda a cada 15 min (:01/:16/:31/:46).")
+
+
+def responde_comandos(hist, estado):
+    """
+    Atende o comando /status enviado ao bot. Polling do getUpdates a cada
+    rodada do scanner — a resposta chega em até ~15 min (limite honesto do
+    cron gratuito; tempo real exigiria servidor dedicado).
+    SEGURANÇA: só responde ao chat configurado e só a comandos da lista fixa.
+    Qualquer outro texto é DADO, não instrução — é ignorado.
+    """
+    tk = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    ch = os.environ.get("TELEGRAM_CHAT_ID", "")
+    if not (tk and ch):
+        return False
+    off = int(estado.get("tg_offset") or 0)
     try:
-        requests.patch(f"https://api.github.com/gists/{gid}", timeout=15,
-                       headers={"Authorization": f"Bearer {token}",
-                                "Accept": "application/vnd.github+json"},
-                       json={"files": {GIST_STATE: {
-                           "content": json.dumps(estado)}}})
-    except Exception:
-        pass
+        r = requests.get(f"https://api.telegram.org/bot{tk}/getUpdates",
+                         params={"offset": off + 1, "timeout": 0}, timeout=10)
+        ups = r.json().get("result", []) or []
+    except Exception as e:
+        log(f"getUpdates falhou: {type(e).__name__}")
+        return False
+    mudou = False
+    for u in ups:
+        uid = int(u.get("update_id", 0))
+        if uid > off:
+            off, mudou = uid, True
+        msg = u.get("message") or {}
+        txt = (msg.get("text") or "").strip().lower()
+        cid = str((msg.get("chat") or {}).get("id", ""))
+        if cid != str(ch):
+            continue                       # chat desconhecido: ignora sempre
+        if txt.startswith("/status") or txt.startswith("/start"):
+            telegram_send(_status_txt(hist))
+    if mudou:
+        estado["tg_offset"] = off
+    return mudou
 
 
 def log(msg):
@@ -427,7 +544,14 @@ def main():
     else:
         log("nenhuma vela nova e nada a podar.")
 
-    resumo_diario(token, gid, hist)          # 1x/dia após as 18h BRT (no-op sem secrets)
+    # Telegram: resumos e comandos (tudo no-op sem os secrets). Estado carregado
+    # UMA vez e salvo UMA vez — o Gist não vira ping-pong de PATCHes.
+    estado = estado_load(token, gid)
+    mudou = resumo_diario(hist, estado)
+    mudou = resumo_semanal(hist, estado) or mudou
+    mudou = responde_comandos(hist, estado) or mudou
+    if mudou:
+        estado_save(token, gid, estado)
 
 
 if __name__ == "__main__":
