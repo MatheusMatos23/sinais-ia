@@ -1,6 +1,9 @@
-streamlit>=1.40
-streamlit-autorefresh>=1.0.1
-yfinance>=0.2.40
-pandas>=2.0
-numpy>=1.24
-requests>=2.31
+# Tetos de versão (auditoria, roadmap 3): sem eles um deploy futuro podia puxar
+# uma major não testada e quebrar sozinho. Pisos = o que o app usa; tetos = a
+# próxima major. Testado com: streamlit 1.59, pandas 2.3, numpy 2.2, requests 2.34.
+streamlit>=1.40,<2
+streamlit-autorefresh>=1.0.1,<2
+yfinance>=0.2.40,<2
+pandas>=2.0,<3
+numpy>=1.24,<3
+requests>=2.31,<3

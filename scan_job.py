@@ -73,6 +73,35 @@ CHIP = {"A · Tendência": "A", "B · Reversão": "B", "C · Rompimento": "C",
 # Fonte única em grade_core.py (auditoria C-01): o app e o scanner leem o MESMO
 # texto e o MESMO avaliador — não há mais duas cópias para divergirem.
 GRADE = {nome: parse_grade(txt) for nome, txt in GRADE_BULLEX_TXT.items()}
+GIST_CFG = "kairo_config.json"
+GIST_STATE = "kairo_scanner_state.json"   # marcador do resumo diário (anti-duplo)
+
+
+def aplica_grade_do_usuario(token, gid):
+    """
+    Sobrepõe à grade padrão o que o usuário EDITOU nos Ajustes do app
+    (chave `horarios_ativo` do kairo_config.json — mesmo formato {dia: faixas}
+    que o grade_core avalia). Fecha a última brecha de divergência: mudar um
+    horário no app passa a valer também aqui. Se a config não existir ou vier
+    quebrada, a grade padrão continua — o scanner NUNCA fica sem grade, porque
+    a coorte foi pré-registrada com o filtro da corretora ligado.
+    """
+    try:
+        r = requests.get(f"https://api.github.com/gists/{gid}", timeout=15,
+                         headers={"Authorization": f"Bearer {token}",
+                                  "Accept": "application/vnd.github+json"})
+        c = r.json().get("files", {}).get(GIST_CFG, {}).get("content")
+        cfg = json.loads(c) if c else {}
+        hor = cfg.get("horarios_ativo") or {}
+        aplicados = 0
+        for nome, bruto in hor.items():
+            if nome in GRADE and isinstance(bruto, dict) and bruto:
+                GRADE[nome] = bruto
+                aplicados += 1
+        if aplicados:
+            log(f"grade do usuário aplicada em {aplicados} ativo(s) (via config do app).")
+    except Exception as e:
+        log(f"config do app indisponível ({type(e).__name__}) — grade padrão em uso.")
 
 
 def aberto_na_corretora(nome, ts_utc):
@@ -82,6 +111,81 @@ def aberto_na_corretora(nome, ts_utc):
     t = t.tz_localize("UTC") if t.tzinfo is None else t.tz_convert("UTC")
     ag = t.tz_convert(BR_TZ)
     return aberto_em(bruto, ag.weekday(), ag.hour * 60 + ag.minute)
+
+
+# ------------------------------- TELEGRAM ------------------------------------
+def telegram_send(txt):
+    """Resumo pelo bot. Sem os secrets vira no-op — nada aqui depende disso."""
+    tk = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    ch = os.environ.get("TELEGRAM_CHAT_ID", "")
+    if not (tk and ch):
+        return False
+    try:
+        requests.post(f"https://api.telegram.org/bot{tk}/sendMessage",
+                      json={"chat_id": ch, "text": txt, "parse_mode": "HTML"},
+                      timeout=10)
+        return True
+    except Exception as e:
+        log(f"telegram falhou: {type(e).__name__}")
+        return False
+
+
+def resumo_diario(token, gid, hist):
+    """
+    Uma vez por dia, após as 18h de Brasília: W/L, taxa, EV e premium do dia.
+    O marcador de "já enviei hoje" vive no Gist (GIST_STATE) porque o runner do
+    Actions é efêmero — sem estado externo, cada execução das 18h+ mandaria o
+    resumo de novo.
+    """
+    agora_br = datetime.now(timezone.utc).astimezone(BR_TZ)
+    if agora_br.hour < 18:
+        return
+    hoje = agora_br.date().isoformat()
+    try:
+        r = requests.get(f"https://api.github.com/gists/{gid}", timeout=15,
+                         headers={"Authorization": f"Bearer {token}",
+                                  "Accept": "application/vnd.github+json"})
+        c = r.json().get("files", {}).get(GIST_STATE, {}).get("content")
+        estado = json.loads(c) if c else {}
+    except Exception:
+        estado = {}
+    if estado.get("ultimo_resumo") == hoje:
+        return
+    # recorte do dia (ts em UTC no histórico; dia contado em Brasília)
+    def dia_br(ts):
+        try:
+            t = pd.Timestamp(ts)
+            t = t.tz_localize("UTC") if t.tzinfo is None else t
+            return t.tz_convert(BR_TZ).date().isoformat()
+        except Exception:
+            return ""
+    do_dia = [h for h in hist if dia_br(h.get("ts")) == hoje]
+    res = [h for h in do_dia if h.get("res") in ("ganhou", "perdeu")]
+    w = sum(1 for h in res if h["res"] == "ganhou")
+    n = len(res)
+    emp = sum(1 for h in do_dia if h.get("res") == "empate")
+    prem = [h for h in res if h.get("premium")]
+    wp = sum(1 for h in prem if h["res"] == "ganhou")
+    be = 100.0 / (1.0 + PAYOUT)
+    if n:
+        wr = w / n * 100
+        ev = (w / n * (1 + PAYOUT) - 1) * 100
+        linha = (f"{w}W · {n - w}L · {emp}E — taxa {wr:.1f}% "
+                 f"(BE {be:.2f}%) · EV {ev:+.1f}%/op")
+    else:
+        linha = f"nenhuma operação resolvida hoje ({emp} empate(s))"
+    lp = (f"\nPremium: {wp}W · {len(prem) - wp}L" if prem else "")
+    telegram_send(f"📊 <b>Kairo — resumo {agora_br:%d/%m}</b>\n{linha}{lp}\n"
+                  f"Coorte {COORTE} · registro automático a cada 15 min.")
+    estado["ultimo_resumo"] = hoje
+    try:
+        requests.patch(f"https://api.github.com/gists/{gid}", timeout=15,
+                       headers={"Authorization": f"Bearer {token}",
+                                "Accept": "application/vnd.github+json"},
+                       json={"files": {GIST_STATE: {
+                           "content": json.dumps(estado)}}})
+    except Exception:
+        pass
 
 
 def log(msg):
@@ -220,6 +324,8 @@ def main():
     if not (key and token and gid):
         log("faltam segredos (TWELVE_DATA_KEY / GH_TOKEN / GIST_ID)"); sys.exit(1)
 
+    aplica_grade_do_usuario(token, gid)      # grade editada no app vale aqui também
+
     hist = gist_load(token, gid)
     if hist is None:
         log("não consegui ler o histórico — abortando sem gravar"); sys.exit(1)
@@ -312,6 +418,8 @@ def main():
             sys.exit(1)
     else:
         log("nenhuma vela nova e nada a podar.")
+
+    resumo_diario(token, gid, hist)          # 1x/dia após as 18h BRT (no-op sem secrets)
 
 
 if __name__ == "__main__":

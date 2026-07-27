@@ -1537,6 +1537,35 @@ HIST_REMOTO = all(_gh())
 # Precisa ser carregado AQUI, antes dos widgets, porque cada um usa o valor
 # salvo como padrão.
 CFG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "kairo_config.json")
+# ====================== ALERTA POR TELEGRAM ======================
+# Liga sozinho quando os dois secrets existem (TELEGRAM_BOT_TOKEN e
+# TELEGRAM_CHAT_ID); sem eles, vira no-op silencioso — o deploy nunca depende
+# disso. Fire-and-forget com timeout curto: um Telegram fora do ar não pode
+# atrasar a varredura nem derrubar o registro do sinal.
+def _tg_cfg():
+    try:
+        tk = st.secrets.get("TELEGRAM_BOT_TOKEN", "")
+        ch = st.secrets.get("TELEGRAM_CHAT_ID", "")
+    except Exception:
+        tk = ch = ""
+    return (tk or os.environ.get("TELEGRAM_BOT_TOKEN", ""),
+            ch or os.environ.get("TELEGRAM_CHAT_ID", ""))
+
+
+def telegram_send(txt):
+    tk, ch = _tg_cfg()
+    if not (tk and ch):
+        return False
+    try:
+        import requests
+        requests.post(f"https://api.telegram.org/bot{tk}/sendMessage",
+                      json={"chat_id": ch, "text": txt, "parse_mode": "HTML"},
+                      timeout=4)
+        return True
+    except Exception:
+        return False               # alerta é conforto; o sinal é o produto
+
+
 CFG_PADRAO = {
     "tf": "5", "estrategias": None, "forca": "FRACA", "mercado": "Tudo",
     "horas_op": None,
@@ -2190,7 +2219,16 @@ window_open = _age <= ENTRY_WINDOW
 # vela fechar. O piso de 1,5s evita um laço de reruns colados; o teto `every` é o
 # ritmo normal no meio da vela.
 if auto_on:
-    alvo = max(1.5, min(every, secs_to_next + 0.4))
+    # REFRESH ADAPTATIVO: nos momentos críticos (janela de entrada no início da
+    # vela e reta final onde o radar trabalha) mantém o ritmo normal; no MIOLO
+    # da vela — onde nada muda em M15 — desacelera para até 45s. Menos reruns =
+    # app mais leve e menos pressão no orçamento de dados. O despertar é
+    # agendado para chegar ao começo da zona do radar, nunca depois.
+    _critico = (_age <= ENTRY_WINDOW + 10) or (secs_to_next <= 90)
+    if _critico:
+        alvo = max(1.5, min(every, secs_to_next + 0.4))
+    else:
+        alvo = max(every, min(45.0, secs_to_next - 75))
     st_autorefresh(interval=int(alvo * 1000), key="auto")
 
 # Este rerun é o PRIMEIRO desta vela? É a única definição correta de "virada":
@@ -2763,6 +2801,7 @@ def hist_df(h):
         "cortado_por": r.get("bloq") or "",
         "premium": "sim" if r.get("premium") else "não",
         "premium_reprovou": ", ".join(r.get("prem_falhas") or []),
+        "conflito": "sim" if r.get("conflito") else "",
         "corpo_pct": r.get("q_corpo", ""), "atr_percentil": r.get("q_atrp", ""),
         # prova do resultado — para conferir contra o feed da corretora
         "apuracao_abertura": r.get("ap_open", ""), "apuracao_fech": r.get("ap_close", ""),
@@ -2829,6 +2868,17 @@ def record_and_resolve(entries, data, minutes, na_janela):
                          "payout": payout_de(nome), "stake": float(stake)})
             seen.add(k)
             changed = True
+            # ALERTA TELEGRAM: dispara UMA vez por entrada (este bloco só roda
+            # quando a chave é nova) e só para sinal que passou nos filtros —
+            # alertar o que a tela nem mostra seria ruído no bolso.
+            if not e.get("bloq"):
+                _pr = " · PREMIUM" if e.get("premium") else ""
+                _cf = " · ⚠ conflito" if e.get("conflito") else ""
+                telegram_send(
+                    f"⚡ <b>{nome}</b> — <b>{e['dir']}</b> ({e['force'].lower()}){_pr}{_cf}\n"
+                    f"vela {hm(start)} → expira {hm_exp(start, minutes).split('→')[-1].strip()}"
+                    f" · {'+'.join(_short(s) for s in e['strats'])}"
+                    f"\nJanela de entrada: primeiros {ENTRY_WINDOW}s da vela.")
     for h in hist:                                        # apura o que já fechou
         if h["res"] is not None:
             continue
@@ -3053,6 +3103,11 @@ def chips(e, big=False):
         c += "".join(f'<span class="sc">{s}</span>' for s in e["strats"])
     else:
         c += "".join(f'<span class="sc">{_short(s)}</span>' for s in e["strats"])
+    # Auditoria S-01, agora visível: houve sinal na direção OPOSTA nesta vela.
+    # Mercado indeciso merece um aviso no cartão, não só uma coluna escondida.
+    if e.get("conflito"):
+        c += ('<span class="sc" style="background:#4a2626;border-color:#7a2e2e;'
+              'color:#f0b4b4">⚠ conflito</span>')
     return f'<div class="strats">{c}</div>'
 
 
