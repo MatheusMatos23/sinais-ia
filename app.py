@@ -45,7 +45,12 @@ import streamlit.components.v1 as components
 from streamlit_autorefresh import st_autorefresh
 
 from strategies import (STRATEGIES, MIN_SCORE, add_indicators, score_of, classify,
-                        backtest, wilson_ci, breakeven, verdict)
+                        backtest, wilson_ci, breakeven, verdict,
+                        verdict_multi, z_for_comparisons, expectancy)
+# Auditoria C-01: a grade da corretora vivia em DUAS cópias (aqui e no
+# scan_job.py) e podia divergir em silêncio. Fonte única agora:
+import grade_core
+from grade_core import GRADE_BULLEX_TXT, DIAS_SIG, DIAS_NOME
 
 # st.components.v1.html está depreciado e já passou da data de remoção
 # (01/06/2026). Usa st.iframe onde existir, mantendo o fallback para rodar
@@ -117,18 +122,7 @@ ASSETS = [
 # Não é estimativa: cada linha veio da tela da corretora em 21/07/2026.
 # Reconferir de tempos em tempos — corretora muda grade sem avisar, e o campo
 # em Ajustes permite sobrescrever qualquer um destes.
-GRADE_BULLEX_TXT = {
-    # os majors com sessão dupla e reabertura no domingo à noite
-    "EUR/USD": "seg-qui 00:00-15:30, 22:00-23:59; sex 00:00-15:30; dom 22:00-23:59",
-    "GBP/USD": "seg-qui 00:00-15:30, 22:00-23:59; sex 00:00-15:30; dom 22:00-23:59",
-    "USD/JPY": "seg-qui 00:00-15:30, 22:00-23:59; sex 00:00-15:30; dom 22:00-23:59",
-    "EUR/JPY": "seg-qui 00:00-15:30, 22:00-23:59; sex 00:00-15:30; dom 22:00-23:59",
-    # estes fecham no fim de semana inteiro e têm janela única
-    "AUD/USD": "seg-sex 00:00-14:00",
-    "USD/CAD": "seg-sex 03:00-15:00",
-    "EUR/GBP": "seg-sex 03:00-15:00",   # conferido na Bullex 21/07/2026
-    # cripto negocia 24/7 na corretora: sem grade = sem restrição
-}
+# GRADE_BULLEX_TXT agora vem de grade_core (fonte única — auditoria C-01).
 SESSIONS = {"Sydney": (21, 6), "Tóquio": (23, 8), "Londres": (7, 16), "Nova York": (12, 21)}
 CUR_SESS = {"AUD": "Sydney", "NZD": "Sydney", "JPY": "Tóquio", "EUR": "Londres",
             "GBP": "Londres", "CHF": "Londres", "USD": "Nova York", "CAD": "Nova York"}
@@ -165,185 +159,30 @@ def dhm(ts):
     return br(ts).strftime("%d/%m %H:%M")
 
 
-def _hhmm(txt):
-    """'09:30' -> 570 minutos. None se não for um horário válido."""
-    try:
-        h, m = str(txt).strip().split(":")
-        h, m = int(h), int(m)
-        return h * 60 + m if 0 <= h <= 23 and 0 <= m <= 59 else None
-    except Exception:
-        return None
+# _hhmm/DIAS_* centralizados em grade_core (auditoria C-01); aliases mantidos
+# para qualquer referência local remanescente.
+_hhmm = grade_core.hhmm_min
 
 
-# Dias da semana no padrão do Python: segunda=0 ... domingo=6.
-DIAS_SIG = {"seg": 0, "ter": 1, "qua": 2, "qui": 3, "sex": 4, "sab": 5, "sáb": 5,
-            "dom": 6}
-DIAS_NOME = ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"]
+# horas_operaveis e parse_grade centralizados em grade_core (auditoria C-01).
+horas_operaveis = grade_core.horas_operaveis
+parse_grade = grade_core.parse_grade
 
 
-def horas_operaveis(grade, nomes):
-    """
-    Horas (0-23, Brasília) em que ALGUM dos ativos abre em dia útil.
-
-    O backtest agrega as 24 horas do dia, mas a corretora fecha o forex inteiro
-    das 16h às 21h. Sem este recorte, o painel "melhores horários" podia eleger
-    uma hora em que não há como operar — conselho pior que nenhum, porque ocupa
-    o lugar de uma hora aproveitável no ranking.
-    Dia útil como referência: fim de semana tem grade própria e recomendar
-    horário com base nele descreveria outra coisa.
-    """
-    horas = set()
-    com_grade = 0
-    for nome in nomes:
-        bruto = (grade or {}).get(nome)
-        if not bruto:
-            # IGNORA ativo sem grade em vez de deixá-lo "abrir as 24h". Antes,
-            # um único ativo sem grade — cripto, ou um forex ainda não cadastrado
-            # — liberava todas as horas e o filtro inteiro morria: a hora 17h
-            # aparecia como operável mesmo com a Bullex fechada. Agora ele só
-            # não contribui; quem decide são os ativos que têm grade.
-            continue
-        com_grade += 1
-        for dsem in range(5):             # segunda a sexta
-            faixas = (bruto.get(dsem, bruto.get(str(dsem)))
-                      if isinstance(bruto, dict) else bruto) or []
-            for par in faixas:
-                if not isinstance(par, (list, tuple)) or len(par) != 2:
-                    continue
-                ini, fim = _hhmm(par[0]), _hhmm(par[1])
-                if ini is None or fim is None:
-                    continue
-                h_i, h_f = ini // 60, (fim - 1) // 60
-                if ini < fim:
-                    horas |= set(range(h_i, h_f + 1))
-                else:                      # faixa que atravessa a meia-noite
-                    horas |= set(range(h_i, 24)) | set(range(0, h_f + 1))
-    # nenhum ativo tinha grade: não há o que restringir, libera tudo
-    return horas if com_grade else set(range(24))
-
-
-def parse_grade(texto):
-    """
-    Texto -> {dia_da_semana: [[ini, fim], ...]}.
-
-    O cronograma da corretora MUDA por dia: a Bullex mostra EUR/USD em
-    00:00–15:30 e 22:00–23:59 de terça a quinta, mas na sexta só o período da
-    manhã, sábado fechado e domingo só a noite. Uma faixa única aplicada a todos
-    os dias liberaria sexta à noite e o sábado inteiro — exatamente as horas em
-    que não há como operar.
-
-    Sintaxe (grupos separados por ';', faixas por ','):
-        seg-qui 00:00-15:30, 22:00-23:59; sex 00:00-15:30; dom 22:00-23:59
-    Sem prefixo de dia, vale para a semana toda:
-        09:00-17:30
-    Dia ausente = fechado naquele dia.
-    """
-    grade = {}
-    if not texto:
-        return grade
-    for grupo in str(texto).split(";"):
-        grupo = grupo.strip()
-        if not grupo:
-            continue
-        dias, resto = None, grupo
-        # prefixo de dias? ex.: "seg-qui 00:00-15:30" ou "dom 22:00-23:59"
-        # inclui vogais acentuadas: "sáb" é a forma natural de escrever sábado,
-        # e sem isso a linha inteira era descartada em silêncio.
-        m = re.match(r"^([a-zà-úç]{3}(?:\s*-\s*[a-zà-úç]{3})?)\s+(.*)$", grupo, re.I)
-        if m:
-            spec, resto = m.group(1).lower().replace(" ", ""), m.group(2)
-            if "-" in spec:
-                a, b = spec.split("-", 1)
-                if a in DIAS_SIG and b in DIAS_SIG:
-                    ia, ib = DIAS_SIG[a], DIAS_SIG[b]
-                    dias = ([ia] if ia == ib else
-                            list(range(ia, ib + 1)) if ia < ib
-                            else list(range(ia, 7)) + list(range(0, ib + 1)))
-            elif spec in DIAS_SIG:
-                dias = [DIAS_SIG[spec]]
-        if dias is None:
-            dias = list(range(7))          # sem prefixo: semana inteira
-        faixas = []
-        for parte in resto.split(","):
-            parte = parte.strip()
-            if "-" not in parte:
-                continue
-            ini, fim = parte.split("-", 1)
-            if _hhmm(ini) is not None and _hhmm(fim) is not None:
-                faixas.append([ini.strip(), fim.strip()])
-        if faixas:
-            for dsem in dias:
-                grade.setdefault(dsem, []).extend(faixas)
-    return grade
-
-
-def fmt_grade(grade):
-    """{dia: faixas} -> texto compacto, agrupando dias com o mesmo horário."""
-    if not grade:
-        return ""
-    porh = {}
-    for dsem in range(7):
-        chave = ",".join(f"{a}-{b}" for a, b in grade.get(dsem, []))
-        if chave:
-            porh.setdefault(chave, []).append(dsem)
-    partes = []
-    for chave, dias in porh.items():
-        dias.sort()
-        # dias consecutivos viram intervalo (seg-qui), soltos ficam separados
-        blocos, ini = [], dias[0]
-        for i in range(1, len(dias) + 1):
-            if i == len(dias) or dias[i] != dias[i - 1] + 1:
-                fim = dias[i - 1]
-                blocos.append(DIAS_NOME[ini] if ini == fim
-                              else f"{DIAS_NOME[ini]}-{DIAS_NOME[fim]}")
-                if i < len(dias):
-                    ini = dias[i]
-        partes.append(f"{'/'.join(blocos)} {chave}")
-    return "; ".join(partes)
+# fmt_grade centralizado em grade_core (auditoria C-01) — e com o G-01
+# corrigido: a saída agora é sempre re-parseável (a versão antiga emitia
+# "seg/qua ..." que o parser não entendia e virava semana inteira).
+fmt_grade = grade_core.fmt_grade
 
 
 def aberto_na_corretora(nome, agora_utc, grade):
     """
-    O ativo está negociável na corretora AGORA?
-
-    A grade é do usuário, lida da tela da própria corretora — não existe API
-    pública da Bullex e inventar horário seria pior que não ter: o app passaria
-    a bloquear entradas válidas ou liberar as que não dá para operar.
-    Sem grade cadastrada para o ativo, devolve True e o app segue no critério
-    de sessão de mercado que já existia — nunca fecha o que não sabe.
+    O ativo está negociável na corretora AGORA? (Lógica única em grade_core;
+    aqui só a conversão UTC -> Brasília e a leitura da grade do usuário.)
     """
     bruto = (grade or {}).get(nome)
-    if not bruto:
-        return True
     ag = br(agora_utc)
-    agora_min = ag.hour * 60 + ag.minute
-    # Formato novo: {dia_da_semana: faixas}. Formato antigo (lista de faixas)
-    # continua aceito e vale para todos os dias.
-    if isinstance(bruto, dict):
-        # o dia pode ter vindo do JSON como texto ("4") em vez de int
-        faixas = bruto.get(ag.weekday(), bruto.get(str(ag.weekday())))
-        if not faixas:
-            # dia declarado na grade porém sem faixa = fechado neste dia
-            return False if any(bruto.values()) else True
-    else:
-        faixas = bruto
-    validas = 0
-    for par in faixas:
-        if not isinstance(par, (list, tuple)) or len(par) != 2:
-            continue
-        ini, fim = _hhmm(par[0]), _hhmm(par[1])
-        if ini is None or fim is None:
-            continue
-        validas += 1
-        # faixa que atravessa a meia-noite (ex.: 21:00 -> 06:00)
-        dentro = (ini <= agora_min < fim) if ini < fim else (agora_min >= ini or agora_min < fim)
-        if dentro:
-            return True
-    # Nenhuma faixa VÁLIDA: trata como sem restrição, não como fechado.
-    # Uma grade corrompida (config truncada, Gist com lixo) fecharia o ativo
-    # o dia inteiro em silêncio — falha na direção de parar de operar sem dizer
-    # por quê. Melhor errar liberando: o critério de sessão continua valendo.
-    return validas == 0
+    return grade_core.aberto_em(bruto, ag.weekday(), ag.hour * 60 + ag.minute)
 
 
 def hm_exp(ts, minutos):
@@ -599,7 +438,11 @@ def td_fetch(symbols, interval, outputsize=250):
                                  "outputsize": outputsize, "timezone": "UTC",
                                  "apikey": TD_KEY, "format": "JSON"}, timeout=9)
         j = r.json()
-    except Exception:
+    except Exception as _e:
+        # Auditoria R-01: engolir a falha de rede escondia o MOTIVO de o app ter
+        # caído para o yfinance — o diagnóstico mostrava a fonte trocada mas não
+        # o porquê. O erro agora aparece na barra de status como os demais.
+        st.session_state["td_erro"] = f"falha de rede na Twelve Data ({type(_e).__name__})"
         return {}
     out = {}
     if isinstance(j, dict) and "values" in j and len(symbols) == 1:      # resposta simples
@@ -2565,6 +2408,17 @@ _cb_ativo, _cb_msg, _cb_n_aval, _cb_w = (
 operando = sistema_on and dentro_janela and not _bloqueio_perda and not _cb_ativo
 
 entries = list(agg.values()) if operando else []
+# CONFLITO DE SINAIS (auditoria S-01): quando estratégias apontam COMPRA e VENDA
+# no MESMO ativo na MESMA vela, as duas entradas existem — a tela desempata pela
+# ordenação (confluência > força > score), mas o histórico não sabia que houve
+# briga. Sem esta marca é impossível medir depois se "vela com conflito" acerta
+# menos (hipótese razoável: sinal contraditório = mercado indeciso). A flag é
+# gravada em TODAS as entradas do par conflitante e vira coluna de análise.
+_dirs_por_ativo = {}
+for _e in agg.values():
+    _dirs_por_ativo.setdefault(_e["a"]["name"], set()).add(_e["dir"])
+for _e in entries:
+    _e["conflito"] = len(_dirs_por_ativo.get(_e["a"]["name"], set())) > 1
 minf = {"FRACA": 1, "MÉDIA": 2, "FORTE": 3}[min_force]
 entries = [e for e in entries if FORCE_ORDER[e["force"]] >= minf]
 if only_conf:
@@ -2691,7 +2545,14 @@ def run_perf():
     # esta coluna era a exceção que ninguém tinha notado.
     today = br(now).date()
     dhist = get_data_hist(analise_list, interval)   # universo inteiro: ver nota acima
-    out = {n: {"hoje": [0, 0], "per": [0, 0]} for n in STRATEGIES}
+    # "h1"/"h2" = SPLIT TEMPORAL (auditoria V-02): primeira e segunda metade
+    # cronológica da janela, medidas separadas. As estratégias não têm parâmetro
+    # ajustado (regras fixas), então o risco de overfitting aqui não é o código —
+    # é o USUÁRIO escolher a estratégia olhando a janela cheia. As duas metades
+    # mostram se a taxa se sustenta fora do pedaço que a elegeu: metade 1 boa e
+    # metade 2 abaixo do breakeven = provável sorte, não vantagem.
+    out = {n: {"hoje": [0, 0], "per": [0, 0], "h1": [0, 0], "h2": [0, 0]}
+           for n in STRATEGIES}
     horas = {h: [0, 0] for h in range(24)}          # hora BRT -> [ops, acertos]
     forcas = {"FORTE": [0, 0], "MEDIA": [0, 0], "FRACA": [0, 0]}   # força -> [ops, acertos]
     ativos = {}                                     # ativo -> [ops, acertos] (só estratégias em uso)
@@ -2706,11 +2567,18 @@ def run_perf():
         d_hoje = d[m] if tem_hoje else None
         # Hora de Brasília de cada vela: o índice está em UTC.
         hb = (d.index.hour - 3) % 24
+        _mid = len(d) // 2                          # fronteira do split temporal
         for name in STRATEGIES:
             sc = score_of(name, d, interval)
             r = backtest(d, sc)
             acc = out[name]
             acc["per"][0] += r["trades"]; acc["per"][1] += r["wins"]
+            # split temporal: cada metade avaliada isolada (o corte no slice
+            # derruba 1 trade de fronteira por ativo — sem vazamento entre elas)
+            r1 = backtest(d.iloc[:_mid], sc.iloc[:_mid])
+            r2 = backtest(d.iloc[_mid:], sc.iloc[_mid:])
+            acc["h1"][0] += r1["trades"]; acc["h1"][1] += r1["wins"]
+            acc["h2"][0] += r2["trades"]; acc["h2"][1] += r2["wins"]
             # acumula POR ATIVO, só as estratégias em uso: comparar ativos numa
             # estratégia que você não opera não ajuda a decidir onde operar.
             if name in sel_strats:
@@ -2955,6 +2823,9 @@ def record_and_resolve(entries, data, minutes, na_janela):
                          "lag": (round(float(lag_ativo[nome]), 2)
                                  if nome in lag_ativo else None),
                          "src": st.session_state.get("fontes", {}).get(nome, "?"),
+                         # auditoria S-01: houve sinal na direção OPOSTA nesta
+                         # mesma vela? Permite medir o acerto das velas em conflito.
+                         "conflito": bool(e.get("conflito")),
                          "payout": payout_de(nome), "stake": float(stake)})
             seen.add(k)
             changed = True
@@ -4101,7 +3972,13 @@ with tab_perf:
         ranked = sorted(STRATEGIES, key=lambda k: (perf[k]["per"][1] / perf[k]["per"][0]) if perf[k]["per"][0] else 0,
                         reverse=True)
         top = ranked[0] if perf[ranked[0]]["per"][0] else None
-        proven = bool(top) and verdict(perf[top]["per"][1], perf[top]["per"][0], PAYOUT) == "acima"
+        # Auditoria V-01: o veredito da tabela compara 11 estratégias AO MESMO
+        # TEMPO — sem correção, uma delas "vence" por sorteio. verdict_multi
+        # aperta o IC por Bonferroni (alfa/11): o selo "comprovada" agora exige
+        # sobreviver às comparações múltiplas, não só ao próprio ruído.
+        _m_est = len(STRATEGIES)
+        proven = bool(top) and verdict_multi(perf[top]["per"][1], perf[top]["per"][0],
+                                             PAYOUT, _m_est) == "acima"
 
         # ---- resumo: a resposta antes da tabela ----
         acima, abaixo, incon, total_ops = 0, 0, 0, 0
@@ -4111,7 +3988,7 @@ with tab_perf:
             if n_ < N_MIN:
                 incon += 1
                 continue
-            v_ = verdict(w_, n_, PAYOUT)
+            v_ = verdict_multi(w_, n_, PAYOUT, _m_est)
             acima += v_ == "acima"
             abaixo += v_ == "abaixo"
             incon += v_ == "inconclusivo"
@@ -4136,20 +4013,45 @@ with tab_perf:
                              help="O recorte do dia costuma ter poucas dezenas de "
                                   "operações — quase sempre ruído. Fica oculto por padrão.")
 
+        def _ev_td(n_, w_):
+            """Expectância por operação (fração da aposta). Win rate sem EV
+            engana: 52% 'parece acima de 50%' e ainda perde com payout 85%."""
+            if not n_:
+                return '<td class="n">—</td>'
+            ev = expectancy(w_, n_, PAYOUT) * 100.0
+            cls = "good" if ev > 0 else ("bad" if ev < 0 else "mid")
+            return f'<td class="mono {cls}">{"+" if ev > 0 else ""}{nbf(ev, 1)}%</td>'
+
+        def _metades_td(p):
+            """1ª × 2ª metade cronológica (auditoria V-02). Sinaliza instável
+            quando a 1ª metade está acima do breakeven e a 2ª caiu abaixo —
+            o padrão clássico de vantagem que era só sorte da janela."""
+            (n1, w1), (n2, w2) = p.get("h1", [0, 0]), p.get("h2", [0, 0])
+            if not n1 or not n2:
+                return '<td class="n">—</td>'
+            t1, t2 = w1 / n1 * 100, w2 / n2 * 100
+            instavel = (t1 >= BE) and (t2 < BE)
+            flag = ' <span class="tagmini" style="background:#7a2e2e">INSTÁVEL</span>' if instavel else ""
+            return (f'<td class="mono n">{nbf(t1, 1)}% → {nbf(t2, 1)}%{flag}</td>')
+
         def linhas(nomes, com_rank=True):
             out = ""
             for i, name in enumerate(nomes, 1):
                 p = perf[name]
                 tag = ""
                 if name == top:
-                    tag = ('<span class="tagmini">VANTAGEM COMPROVADA</span>' if proven
+                    tag = ('<span class="tagmini">VANTAGEM COMPROVADA (Bonferroni)</span>' if proven
                            else '<span class="tagmini">MAIOR TAXA · não comprovada</span>')
+                # amostra abaixo de 100 operações: estatisticamente não confiável
+                if 0 < p["per"][0] < 100:
+                    tag += ' <span class="tagmini" style="opacity:.7">n&lt;100 · não confiável</span>'
                 td_hoje = f'<td>{cell(*p["hoje"])}</td>' if ver_hoje else ""
                 rk = (f'<span class="rankn{" top" if i == 1 else ""}">{i}</span>'
                       if com_rank else "")
                 out += (f'<tr class="{"on" if name in sel_strats else ""}">'
                         f'<td class="nm">{rk}{name}{tag}</td>{td_hoje}'
-                        f'<td>{cell(*p["per"])}</td>{barra(*p["per"])}</tr>')
+                        f'<td>{cell(*p["per"])}</td>{_ev_td(*p["per"])}'
+                        f'{_metades_td(p)}{barra(*p["per"])}</tr>')
             return out
 
         def barra(n, w):
@@ -4172,6 +4074,7 @@ with tab_perf:
         cab = ('<tr><th>Estratégia</th>'
                + (f'<th>Hoje</th>' if ver_hoje else "")
                + f'<th>Período ({TF_PERIOD[interval]})</th>'
+               + '<th>EV/op</th><th>1ª → 2ª metade</th>'
                + f'<th style="width:190px">Vs. breakeven</th></tr>')
 
         # Em uso primeiro, separadas do resto: é a informação que você consulta
@@ -4199,6 +4102,13 @@ with tab_perf:
                 _viv.setdefault(_s, [0, 0])
                 _viv[_s][0] += 1
                 _viv[_s][1] += h["res"] == "ganhou"
+        # DESATIVAÇÃO AUTOMÁTICA (auditoria Fase 6): estratégia cujo IC de Wilson
+        # INTEIRO ficou abaixo do breakeven ao vivo (n>=30) é marcada DEGRADADA.
+        # Critério estatístico de propósito — desativar por ponto (wr < BE)
+        # desligaria tudo em qualquer período mediano, como a medição em
+        # walk-forward mostrou (todas as estratégias ~52-53% na 1ª metade).
+        # A marca é o alerta; a remoção da seleção continua sendo decisão humana.
+        _degradadas = []
         _linhas_cmp = ""
         for name in ranked:
             _sig = name.split(" · ")[0]
@@ -4209,7 +4119,13 @@ with tab_perf:
             pv, pb = wv / nv * 100, w_bt / n_bt * 100
             d = pv - pb
             cls = "bad" if d <= -5 else ("good" if d >= 5 else "mid")
-            _linhas_cmp += (f'<tr><td class="nm">{name}</td>'
+            _, _, _hi_v = wilson_ci(wv, nv)
+            _deg = _hi_v * 100 < BE
+            if _deg:
+                _degradadas.append(name)
+            _tag_deg = (' <span class="tagmini" style="background:#7a2e2e">DEGRADADA'
+                        ' AO VIVO</span>' if _deg else "")
+            _linhas_cmp += (f'<tr><td class="nm">{name}{_tag_deg}</td>'
                             f'<td class="n">{wl(w_bt, n_bt)}</td>'
                             f'<td class="n">{wl(wv, nv)}</td>'
                             f'<td class="mono {cls}" style="font-weight:700">{d:+.1f} pp</td>'
@@ -4220,6 +4136,13 @@ with tab_perf:
             st.markdown(f'<table class="tbl"><tr><th>Estratégia</th>'
                         f'<th>Backtest</th><th>Ao vivo</th><th>Diferença</th></tr>'
                         f'{_linhas_cmp}</table>', unsafe_allow_html=True)
+            if _degradadas:
+                st.warning(
+                    f"**Estratégia(s) com degradação COMPROVADA ao vivo** (IC de "
+                    f"Wilson inteiro abaixo do breakeven, n≥30): "
+                    f"{', '.join(_degradadas)}. Recomendação: retire da seleção em "
+                    f"Ajustes. A remoção não é automática de propósito — mexer na "
+                    f"seleção parte a coorte do experimento, e isso é decisão sua.")
             st.markdown('<div class="note">Uma queda consistente do backtest para o '
                         'ao vivo mede o custo do mundo real: dado que chega atrasado, '
                         'entrada que sai fora da abertura, preço que não é o mesmo. '
@@ -4360,6 +4283,14 @@ with tab_perf:
             _h_ok = (horas_operaveis(GRADE_CORRETORA,
                                      [a["name"] for a in analise_list if a["type"] == "fx"])
                      if USAR_GRADE else set(range(24)))
+            # Auditoria V-01 (data snooping): este painel testa até 24 baldes ao
+            # mesmo tempo. Com IC de 95% simples, ~1 hora "vencedora" a cada 20 é
+            # o esperado POR ACASO. O z de Bonferroni divide o alfa pelo número
+            # de baldes efetivamente testados: só é "melhor horário" quem
+            # sobrevive à correção de comparações múltiplas.
+            _baldes = [h_ for h_ in range(24)
+                       if horas[h_][0] >= N_H and (h_ in _h_ok or not USAR_GRADE)]
+            _z_h = z_for_comparisons(len(_baldes))
             col = ""
             for h_ in range(24):
                 n_, w_ = horas[h_]
@@ -4373,26 +4304,25 @@ with tab_perf:
                             f'<span class="hh">{h_:02d}</span></div>')
                     continue
                 p_ = w_ / n_ * 100
-                _, lo_, hi_ = wilson_ci(w_, n_)
-                acima = lo_ * 100 > BE      # IC inteiro acima: o critério de sempre
+                _, lo_, hi_ = wilson_ci(w_, n_, z=_z_h)
+                acima = lo_ * 100 > BE      # IC corrigido inteiro acima
                 cls_ = "bom" if acima else ("ruim" if p_ < BE else "neutro")
                 alt = max(6, min(100, (p_ - 40) / 20 * 100))
                 col += (f'<div class="hcol" title="{h_:02d}h · {w_}W · {n_ - w_}L · {pct(p_, 1)} '
-                        f'(IC95 {lo_*100:.0f}–{pct(hi_*100, 0)})">'
+                        f'(IC corrigido {lo_*100:.0f}–{pct(hi_*100, 0)})">'
                         f'<i class="{cls_}" style="height:{alt:.0f}%"></i>'
                         f'<span class="hh">{h_:02d}</span></div>')
-            melhores = [(h_, horas[h_]) for h_ in range(24)
-                        if horas[h_][0] >= N_H
-                        and (h_ in _h_ok or not USAR_GRADE)
-                        and wilson_ci(horas[h_][1], horas[h_][0])[1] * 100 > BE]
+            melhores = [(h_, horas[h_]) for h_ in _baldes
+                        if wilson_ci(horas[h_][1], horas[h_][0], z=_z_h)[1] * 100 > BE]
             melhores.sort(key=lambda kv: -kv[1][1] / kv[1][0])
             if melhores:
                 txt = " · ".join(f"<b>{h_:02d}h</b> {pct(v[1]/v[0]*100, 1)}"
                                  for h_, v in melhores[:4])
-                cab_h = f'Horas cujo IC95 inteiro ficou acima do breakeven: {txt}'
+                cab_h = (f'Horas acima do breakeven APÓS correção de comparações '
+                         f'múltiplas (Bonferroni, {len(_baldes)} baldes): {txt}')
             else:
-                cab_h = ('<b>Nenhuma hora</b> teve o intervalo de confiança inteiro '
-                         'acima do breakeven neste período.')
+                cab_h = (f'<b>Nenhuma hora</b> sobreviveu à correção de comparações '
+                         f'múltiplas ({len(_baldes)} baldes testados) neste período.')
             st.markdown(f'<div class="horas"><div class="h-linha be"></div>{col}</div>'
                         f'<div class="note">{cab_h}<br><b>Cuidado com esta tabela.</b> '
                         f'São 24 horas testadas ao mesmo tempo: mesmo que nenhuma tenha '

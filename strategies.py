@@ -12,7 +12,9 @@ SEM LOOK-AHEAD: o score da barra i usa apenas dados até o fechamento da barra i
 A entrada acontece na ABERTURA da barra i+1 e o acerto é pela COR dessa vela:
     COMPRA vence se close(i+1) > open(i+1)  (vela verde)
     VENDA  vence se close(i+1) < open(i+1)  (vela vermelha)
-Empate (close == open) conta como derrota e é reportado à parte.
+Empate (close == open): por padrão é REEMBOLSO (tie_mode="refund" no backtest —
+sai do denominador da taxa, como as corretoras tratam), com opção "loss" para o
+cenário conservador. Sempre reportado à parte.
 """
 from __future__ import annotations
 
@@ -26,8 +28,29 @@ HIGHER_RULE = {"1m": "5min", "5m": "15min", "15m": "60min"}
 
 
 # ----------------------------------------------------------------------
+def sanitize_ohlc(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Blindagem de integridade aplicada ANTES de qualquer indicador: ordena por
+    tempo e remove timestamps DUPLICADOS (mantém o último).
+
+    Sem isto, uma fonte que devolvesse a mesma vela duas vezes (a Twelve Data e o
+    yfinance ocasionalmente repetem a barra de borda) faria `iloc[-1]` e as
+    janelas rolantes (rolling(20), streaks) contarem a barra repetida — a decisão
+    passaria a olhar uma vela fantasma. É a raiz silenciosa clássica de erro de
+    dado. Ponto único porque TODO caminho (ao vivo, backtest, scanner) passa por
+    add_indicators.
+    """
+    if df is None or not len(df):
+        return df
+    if getattr(df.index, "is_monotonic_increasing", True) is False:
+        df = df.sort_index()
+    if df.index.duplicated().any():
+        df = df[~df.index.duplicated(keep="last")]
+    return df
+
+
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    d = df.copy()
+    d = sanitize_ohlc(df).copy()
     c, o, h, l = d["Close"], d["Open"], d["High"], d["Low"]
     d["ema9"] = c.ewm(span=9, adjust=False).mean()
     d["ema21"] = c.ewm(span=21, adjust=False).mean()
@@ -308,3 +331,45 @@ def verdict(wins: int, trades: int, payout: float) -> str:
     if hi < be:
         return "abaixo"
     return "inconclusivo"
+
+
+def z_for_comparisons(m: int, alpha: float = 0.05) -> float:
+    """
+    z de Bonferroni para m comparações simultâneas (bicaudal).
+
+    Motivo (auditoria V-01): quem testa 24 horários ou 11 estratégias com IC de
+    95% em cada um vai "descobrir" vencedores por puro acaso — com 24 baldes,
+    ~1 falso positivo é o ESPERADO sob hipótese nula. Dividir o alfa pelo número
+    de comparações é a correção mais simples e transparente: com m=24, cada
+    balde precisa passar um IC de 99,79% para ser declarado vencedor.
+    m=1 devolve os 1,96 de sempre.
+    """
+    from statistics import NormalDist
+    m = max(1, int(m))
+    return NormalDist().inv_cdf(1 - (alpha / m) / 2)
+
+
+def verdict_multi(wins: int, trades: int, payout: float, m: int) -> str:
+    """verdict() com IC ajustado por Bonferroni para m comparações."""
+    if not trades:
+        return "sem dados"
+    be = breakeven(payout)
+    _, lo, hi = wilson_ci(wins, trades, z=z_for_comparisons(m))
+    if lo > be:
+        return "acima"
+    if hi < be:
+        return "abaixo"
+    return "inconclusivo"
+
+
+def expectancy(wins: int, trades: int, payout: float) -> float:
+    """
+    Expectância por operação, em fração da aposta (empates fora do denominador,
+    coerente com tie_mode='refund'): EV = p·(1+payout) − 1.
+    Com payout 0,85: p=54,05% -> 0; p=50% -> −7,5% da aposta por operação.
+    Win rate sem expectância engana — 52% parece "acima de 50%" e ainda PERDE.
+    """
+    if not trades:
+        return float("nan")
+    p = wins / trades
+    return p * (1.0 + payout) - 1.0

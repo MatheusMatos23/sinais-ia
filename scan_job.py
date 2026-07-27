@@ -21,17 +21,16 @@ Nada aqui é recomendação financeira. Uso educacional/demonstração.
 import json
 import math
 import os
-import re
 import sys
-import time
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-import numpy as np
 import pandas as pd
 import requests
 
-from strategies import add_indicators, score_of, classify, MIN_SCORE, breakeven
+from strategies import add_indicators, score_of, classify
+# Auditoria C-01: grade da corretora em fonte ÚNICA, compartilhada com o app.
+from grade_core import GRADE_BULLEX_TXT, parse_grade, aberto_em
 
 BR_TZ = ZoneInfo("America/Sao_Paulo")
 
@@ -71,96 +70,18 @@ CHIP = {"A · Tendência": "A", "B · Reversão": "B", "C · Rompimento": "C",
         "K · Reversão dupla": "K"}
 
 # ------------------------- GRADE DA CORRETORA (BULLEX) -----------------------
-# Mesma grade do app (horário de Brasília). Só registramos um sinal se o ativo
-# estava ABERTO na Bullex na abertura daquela vela. Sem isso, o scanner gravava
-# velas de madrugada/fim de semana em que não há como operar, poluindo a coorte.
-GRADE_BULLEX_TXT = {
-    "EUR/USD": "seg-qui 00:00-15:30, 22:00-23:59; sex 00:00-15:30; dom 22:00-23:59",
-    "GBP/USD": "seg-qui 00:00-15:30, 22:00-23:59; sex 00:00-15:30; dom 22:00-23:59",
-    "USD/JPY": "seg-qui 00:00-15:30, 22:00-23:59; sex 00:00-15:30; dom 22:00-23:59",
-    "EUR/JPY": "seg-qui 00:00-15:30, 22:00-23:59; sex 00:00-15:30; dom 22:00-23:59",
-    "AUD/USD": "seg-sex 00:00-14:00",
-    "USD/CAD": "seg-sex 03:00-15:00",
-    "EUR/GBP": "seg-sex 03:00-15:00",
-}
-DIAS_SIG = {"seg": 0, "ter": 1, "qua": 2, "qui": 3, "sex": 4, "sab": 5, "sáb": 5,
-            "dom": 6}
-
-
-def _hhmm(txt):
-    try:
-        h, m = str(txt).strip().split(":")
-        h, m = int(h), int(m)
-        return h * 60 + m if 0 <= h <= 23 and 0 <= m <= 59 else None
-    except Exception:
-        return None
-
-
-def parse_grade(texto):
-    """Texto da grade -> {dia_da_semana: [[ini, fim], ...]} (igual ao app)."""
-    grade = {}
-    if not texto:
-        return grade
-    for grupo in str(texto).split(";"):
-        grupo = grupo.strip()
-        if not grupo:
-            continue
-        dias, resto = None, grupo
-        m = re.match(r"^([a-zà-úç]{3}(?:\s*-\s*[a-zà-úç]{3})?)\s+(.*)$", grupo, re.I)
-        if m:
-            spec, resto = m.group(1).lower().replace(" ", ""), m.group(2)
-            if "-" in spec:
-                a, b = spec.split("-", 1)
-                if a in DIAS_SIG and b in DIAS_SIG:
-                    ia, ib = DIAS_SIG[a], DIAS_SIG[b]
-                    dias = ([ia] if ia == ib else
-                            list(range(ia, ib + 1)) if ia < ib
-                            else list(range(ia, 7)) + list(range(0, ib + 1)))
-            elif spec in DIAS_SIG:
-                dias = [DIAS_SIG[spec]]
-        if dias is None:
-            dias = list(range(7))
-        faixas = []
-        for parte in resto.split(","):
-            parte = parte.strip()
-            if "-" not in parte:
-                continue
-            ini, fim = parte.split("-", 1)
-            if _hhmm(ini) is not None and _hhmm(fim) is not None:
-                faixas.append([ini.strip(), fim.strip()])
-        if faixas:
-            for dsem in dias:
-                grade.setdefault(dsem, []).extend(faixas)
-    return grade
-
-
+# Fonte única em grade_core.py (auditoria C-01): o app e o scanner leem o MESMO
+# texto e o MESMO avaliador — não há mais duas cópias para divergirem.
 GRADE = {nome: parse_grade(txt) for nome, txt in GRADE_BULLEX_TXT.items()}
 
 
 def aberto_na_corretora(nome, ts_utc):
-    """
-    O ativo estava negociável na Bullex nesse instante (abertura da vela)?
-    ts_utc: pd.Timestamp UTC naive. Converte para Brasília e testa a grade do dia.
-    Sem grade cadastrada = sem restrição (True).
-    """
+    """Ativo negociável na Bullex na abertura da vela? (delegado ao grade_core)"""
     bruto = GRADE.get(nome)
-    if not bruto:
-        return True
     t = pd.Timestamp(ts_utc)
     t = t.tz_localize("UTC") if t.tzinfo is None else t.tz_convert("UTC")
     ag = t.tz_convert(BR_TZ)
-    agora_min = ag.hour * 60 + ag.minute
-    faixas = bruto.get(ag.weekday())
-    if not faixas:
-        return False if any(bruto.values()) else True
-    for par in faixas:
-        ini, fim = _hhmm(par[0]), _hhmm(par[1])
-        if ini is None or fim is None:
-            continue
-        dentro = (ini <= agora_min < fim) if ini < fim else (agora_min >= ini or agora_min < fim)
-        if dentro:
-            return True
-    return False
+    return aberto_em(bruto, ag.weekday(), ag.hour * 60 + ag.minute)
 
 
 def log(msg):
