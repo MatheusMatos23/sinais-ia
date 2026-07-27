@@ -167,15 +167,23 @@ def resumo_diario(token, gid, hist):
     prem = [h for h in res if h.get("premium")]
     wp = sum(1 for h in prem if h["res"] == "ganhou")
     be = 100.0 / (1.0 + PAYOUT)
+    # PREMIUM primeiro — é a coorte que o dono opera e a que a medição
+    # out-of-sample favoreceu; o geral vira contexto logo abaixo.
+    if prem:
+        np_ = len(prem)
+        wrp = wp / np_ * 100
+        evp = (wp / np_ * (1 + PAYOUT) - 1) * 100
+        lp = (f"💎 <b>Premium: {wp}W · {np_ - wp}L — {wrp:.1f}%</b> "
+              f"(BE {be:.2f}%) · EV {evp:+.1f}%/op")
+    else:
+        lp = "💎 Premium: nenhuma operação hoje"
     if n:
         wr = w / n * 100
         ev = (w / n * (1 + PAYOUT) - 1) * 100
-        linha = (f"{w}W · {n - w}L · {emp}E — taxa {wr:.1f}% "
-                 f"(BE {be:.2f}%) · EV {ev:+.1f}%/op")
+        linha = (f"Geral: {w}W · {n - w}L · {emp}E — {wr:.1f}% · EV {ev:+.1f}%/op")
     else:
-        linha = f"nenhuma operação resolvida hoje ({emp} empate(s))"
-    lp = (f"\nPremium: {wp}W · {len(prem) - wp}L" if prem else "")
-    telegram_send(f"📊 <b>Kairo — resumo {agora_br:%d/%m}</b>\n{linha}{lp}\n"
+        linha = f"Geral: nenhuma operação resolvida ({emp} empate(s))"
+    telegram_send(f"📊 <b>Kairo — resumo {agora_br:%d/%m}</b>\n{lp}\n{linha}\n"
                   f"Coorte {COORTE} · registro automático a cada 15 min.")
     estado["ultimo_resumo"] = hoje
     try:

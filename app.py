@@ -2868,17 +2868,25 @@ def record_and_resolve(entries, data, minutes, na_janela):
                          "payout": payout_de(nome), "stake": float(stake)})
             seen.add(k)
             changed = True
-            # ALERTA TELEGRAM: dispara UMA vez por entrada (este bloco só roda
-            # quando a chave é nova) e só para sinal que passou nos filtros —
-            # alertar o que a tela nem mostra seria ruído no bolso.
-            if not e.get("bloq"):
-                _pr = " · PREMIUM" if e.get("premium") else ""
-                _cf = " · ⚠ conflito" if e.get("conflito") else ""
+            # ALERTA TELEGRAM — SÓ PREMIUM, por escolha do dono: é a coorte que a
+            # medição out-of-sample favoreceu (59,4% vs 52,6% em 25 mil velas) e
+            # alertar tudo viraria ruído no bolso. Dispara UMA vez por entrada
+            # (este bloco só roda quando a chave é nova) e só se passou nos
+            # filtros. O resultado da mesma entrada chega quando a vela fechar.
+            if not e.get("bloq") and e.get("premium"):
+                _q = qualidade.get(nome, {})
+                _cf = "\n⚠ Atenção: há sinal na direção OPOSTA nesta vela." if e.get("conflito") else ""
+                _seta = "🟢▲" if e["dir"] == "COMPRA" else "🔴▼"
                 telegram_send(
-                    f"⚡ <b>{nome}</b> — <b>{e['dir']}</b> ({e['force'].lower()}){_pr}{_cf}\n"
-                    f"vela {hm(start)} → expira {hm_exp(start, minutes).split('→')[-1].strip()}"
-                    f" · {'+'.join(_short(s) for s in e['strats'])}"
-                    f"\nJanela de entrada: primeiros {ENTRY_WINDOW}s da vela.")
+                    f"💎 <b>SINAL PREMIUM</b>\n"
+                    f"{_seta} <b>{nome} — {e['dir']}</b> · força {e['force'].lower()}\n"
+                    f"🕐 vela {hm(start)} → expira "
+                    f"{hm_exp(start, minutes).split('→')[-1].strip()}\n"
+                    f"📐 {len(e['strats'])} estratégias concordam "
+                    f"({'+'.join(_short(s) for s in e['strats'])})"
+                    + (f" · corpo {nbf(_q['corpo'], 0)}%" if _q.get("corpo") is not None else "")
+                    + (f" · ATR p{nbf(_q['atrp'], 0)}" if _q.get("atrp") is not None else "")
+                    + f"\n⏱ Entre nos primeiros {ENTRY_WINDOW}s da vela.{_cf}")
     for h in hist:                                        # apura o que já fechou
         if h["res"] is not None:
             continue
@@ -2919,6 +2927,16 @@ def record_and_resolve(entries, data, minutes, na_janela):
             h["ap_low"] = round(lo, 6) if math.isfinite(lo) else None
             h["ap_src"] = st.session_state.get("fontes", {}).get(h["asset"], "?")
             changed = True
+            # RESULTADO NO TELEGRAM — mesma régua do alerta de entrada (só
+            # premium): fecha o ciclo sinal → resultado no celular. Este bloco
+            # roda UMA vez por entrada (res transita de None para definitivo).
+            if h.get("premium"):
+                _ico = {"ganhou": "✅ <b>GANHOU</b>", "perdeu": "❌ <b>PERDEU</b>",
+                        "empate": "↔ <b>EMPATE</b> (reembolso)"}[h["res"]]
+                telegram_send(
+                    f"💎 <b>{h['asset']}</b> {h['dir']} — {_ico}\n"
+                    f"vela {hm(h['ts'])} · abriu {fmt_price(h['asset'], op)} · "
+                    f"fechou {fmt_price(h['asset'], cl)}")
     if len(hist) > 3000:
         del hist[:len(hist) - 3000]
     if changed:
