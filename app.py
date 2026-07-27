@@ -376,6 +376,13 @@ def hm_exp(ts, minutos):
 # forte 54,1% contra fraca 53,9% em 10.045 operações — e não separou nada.
 # Aqui a hipótese é outra (regime + qualidade da vela + dado limpo), mas continua
 # sendo hipótese até a amostra falar.
+# Forward test M15 roda no scanner de fundo (GitHub Actions), que é o ÚNICO
+# escritor do histórico. Com isto ligado, o app NÃO grava sinais novos no Gist —
+# apenas lê, exibe e apura. Evita corrida entre dois escritores e os buracos de
+# captura do app (que dependia de aba aberta na virada). Desligar só para voltar
+# a gravar pelo navegador.
+SCANNER_ATIVO = True
+
 PREMIUM_VER = 1
 PREMIUM_REGRAS = [
     ("2+ estratégias concordando",
@@ -2915,7 +2922,11 @@ def record_and_resolve(entries, data, minutes, na_janela):
     start = pd.Timestamp(ck * minutes * 60, unit="s")     # abertura da vela da entrada
     seen = {(h["asset"], h["dir"], h["ck"], h.get("tf")) for h in hist}
     changed = False
-    for e in (entries if na_janela else []):
+    # Com o scanner de fundo ligado, ele é o único a gravar sinais novos. O app
+    # segue apurando o que já existe (loop abaixo), mas não insere entradas — assim
+    # não há dois escritores disputando o mesmo Gist nem buracos por aba fechada.
+    grava_novos = not SCANNER_ATIVO
+    for e in ((entries if na_janela else []) if grava_novos else []):
         k = (e["a"]["name"], e["dir"], ck, minutes)
         if k not in seen:
             nome = e["a"]["name"]
