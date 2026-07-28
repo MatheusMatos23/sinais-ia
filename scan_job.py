@@ -396,10 +396,45 @@ def responde_comandos(hist, estado):
         log(f"getUpdates falhou: {type(e).__name__}")
         return False
     mudou = False
+    hist_mudou = False
     for u in ups:
         uid = int(u.get("update_id", 0))
         if uid > off:
             off, mudou = uid, True
+        # BOTÃO "✅ Executei" (item 2): o clique chega como callback_query.
+        # Whitelist estrita: só o prefixo exec| do chat configurado; o resto do
+        # conteúdo é DADO e é ignorado.
+        cb = u.get("callback_query") or {}
+        if cb:
+            dados = str(cb.get("data") or "")
+            ccid = str(((cb.get("message") or {}).get("chat") or {}).get("id", ""))
+            if ccid == str(ch) and dados.startswith("exec|"):
+                try:
+                    _, a_, ck_, tf_, dir_ = dados.split("|", 4)
+                    achou = False
+                    for h in hist:
+                        if (h.get("asset") == a_ and str(h.get("ck")) == ck_
+                                and str(h.get("tf")) == tf_ and h.get("dir") == dir_):
+                            if not h.get("exec"):
+                                h["exec"] = True
+                                hist_mudou = True
+                            achou = True
+                            break
+                    try:
+                        requests.post(f"https://api.telegram.org/bot"
+                                      f"{os.environ.get('TELEGRAM_BOT_TOKEN','')}"
+                                      f"/answerCallbackQuery",
+                                      json={"callback_query_id": cb.get("id"),
+                                            "text": ("✅ Marcada como executada!"
+                                                     if achou else
+                                                     "Registro ainda não chegou — "
+                                                     "clique de novo em ~15 min.")},
+                                      timeout=10)
+                    except Exception:
+                        pass
+                except Exception as e:
+                    log(f"callback inválido: {type(e).__name__}")
+            continue
         msg = u.get("message") or {}
         txt = (msg.get("text") or "").strip().lower()
         cid = str((msg.get("chat") or {}).get("id", ""))
@@ -409,7 +444,7 @@ def responde_comandos(hist, estado):
             telegram_send(_status_txt(hist))
     if mudou:
         estado["tg_offset"] = off
-    return mudou
+    return mudou, hist_mudou
 
 
 def log(msg):
@@ -526,14 +561,13 @@ def sinais_da_vela(fechadas):
     atrp = (float((serie_atr <= float(u["atr"])).mean() * 100.0)
             if len(serie_atr) >= 30 and math.isfinite(float(u["atr"])) else None)
     saida = [{"dir": k, "force": v["force"], "strats": v["strats"]} for k, v in agg.items()]
-    # FILTRO DE REGIME (mesma régua do app): sem mercado lateral, as estratégias
-    # contra-tendência erram juntas. Medido: ADX<20 + confluência = 57,35%,
-    # EV +6,09%, pior sequência de losses 9 -> 5.
-    if ADX_MAX is not None:
-        _adx = float(u.get("adx", 0.0) or 0.0)
-        if math.isfinite(_adx) and _adx >= ADX_MAX:
-            return [], round(corpo, 1), (None if atrp is None else round(atrp, 1))
-    return saida, round(corpo, 1), (None if atrp is None else round(atrp, 1))
+    # ADX exposto ao chamador: o corte por regime é marcado no REGISTRO
+    # (bloq="tendencia"), nunca descartado — descartar mataria o grupo de
+    # controle que permite medir se o filtro ajuda em cada par (item 4).
+    _adx = float(u.get("adx", 0.0) or 0.0)
+    adx_out = round(_adx, 1) if math.isfinite(_adx) else None
+    return (saida, round(corpo, 1),
+            (None if atrp is None else round(atrp, 1)), adx_out)
 
 
 def avalia_premium(strats, corpo, atrp):
@@ -614,7 +648,9 @@ def main():
             if not aberto_na_corretora(nome, t_abre):
                 continue
             fechadas = df[df.index < t_abre]
-            sinais, corpo, atrp = sinais_da_vela(fechadas)
+            sinais, corpo, atrp, adx_v = sinais_da_vela(fechadas)
+            _bloq_regime = ("tendencia" if (ADX_MAX is not None and adx_v is not None
+                                            and adx_v >= ADX_MAX) else None)
             if not sinais:
                 continue
             row = df.loc[t_abre]
@@ -637,9 +673,9 @@ def main():
                     "force": s["force"], "strats": [CHIP.get(x, x) for x in s["strats"]],
                     "tf": TF_MIN, "res": r_final, "janela": True,
                     "cfg_forca": FORCA_MIN, "cfg_conf": False, "cfg_mkt": MERCADO,
-                    "coorte": COORTE, "bloq": None,
+                    "coorte": COORTE, "bloq": _bloq_regime,
                     "premium": bool(prem), "prem_ver": PREMIUM_VER, "prem_falhas": falhas,
-                    "q_corpo": corpo, "q_atrp": atrp,
+                    "q_corpo": corpo, "q_atrp": atrp, "q_adx": adx_v,
                     "lag": 0.0, "src": "twelvedata (scanner)",
                     "payout": PAYOUT, "stake": STAKE, "exec": False, "prontidao": "",
                     "ap_open": round(op, 6), "ap_close": round(cl, 6),
@@ -667,7 +703,12 @@ def main():
     mudou = resumo_diario(hist, estado)
     mudou = resumo_semanal(hist, estado) or mudou
     mudou = backup_mensal(token, gid, hist, estado) or mudou
-    mudou = responde_comandos(hist, estado) or mudou
+    _m_cmd, _m_hist = responde_comandos(hist, estado)
+    mudou = _m_cmd or mudou
+    if _m_hist:
+        # cliques em "✅ Executei" alteraram registros: persiste no Gist
+        ok = gist_save(token, gid, hist)
+        log(f"marcações de execução sincronizadas. Gist {'OK' if ok else 'FALHOU'}.")
     if mudou:
         estado_save(token, gid, estado)
 

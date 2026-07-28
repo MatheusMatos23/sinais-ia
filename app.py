@@ -1564,15 +1564,20 @@ def _tg_cfg():
             ch or os.environ.get("TELEGRAM_CHAT_ID", ""))
 
 
-def telegram_send(txt):
+def telegram_send(txt, botoes=None):
+    """botoes: lista de (rotulo, callback_data) — vira botão inline na mensagem.
+    O clique é processado pelo scanner (polling), que marca `exec` no histórico."""
     tk, ch = _tg_cfg()
     if not (tk and ch):
         return False
     try:
         import requests
+        corpo = {"chat_id": ch, "text": txt, "parse_mode": "HTML"}
+        if botoes:
+            corpo["reply_markup"] = {"inline_keyboard": [[
+                {"text": r, "callback_data": cd} for r, cd in botoes]]}
         requests.post(f"https://api.telegram.org/bot{tk}/sendMessage",
-                      json={"chat_id": ch, "text": txt, "parse_mode": "HTML"},
-                      timeout=4)
+                      json=corpo, timeout=4)
         return True
     except Exception:
         return False               # alerta é conforto; o sinal é o produto
@@ -1602,7 +1607,8 @@ CFG_PADRAO = {
     # com o Gist funcionando: o dado estava salvo, só não era lido de volta.
     # Eu tinha atribuído isso ao disco efêmero; era só metade da explicação.
     # Regra: toda chave salva em cfg_save PRECISA existir aqui.
-    "stake": 10.0, "limite_on": False, "limite": 50.0, "notif": False,
+    "stake": 100.0, "limite_on": False, "limite": 50.0, "notif": False,
+    "meta_on": True, "meta": 1000.0,   # take-profit diário (pedido do dono)
     # ---- filtros de qualidade de entrada (cada um mede o próprio efeito) ----
     "f_corpo_on": False, "f_corpo_min": 35,        # corpo mínimo em % do range
     "f_atr_on": False, "f_atr_lo": 20, "f_atr_hi": 90,   # percentis de ATR aceitos
@@ -1938,6 +1944,15 @@ with tab_cfg:
         lim_val = st.number_input("Limite de perda no dia", min_value=0.0, step=10.0,
                                   value=float(CFG.get("limite", 50.0)),
                                   disabled=not lim_on)
+        meta_on = st.toggle("Parar após GANHAR X no dia (take-profit)",
+                            value=CFG.get("meta_on", True),
+                            help="O espelho do limite de perda: bateu a meta, o "
+                                 "sistema para de gerar entradas até amanhã. "
+                                 "Binária pune quem devolve o lucro à tarde — "
+                                 "disciplina pré-combinada vale mais que taxa.")
+        meta_val = st.number_input("Meta de ganho no dia", min_value=0.0, step=50.0,
+                                   value=float(CFG.get("meta", 1000.0)),
+                                   disabled=not meta_on)
         usar_janela = st.toggle("Operar só em horários escolhidos",
                                 value=CFG.get("usar_janela", False))
         # Seleção por hora, não por faixa única: assim dá para operar 9h–10h,
@@ -2259,6 +2274,7 @@ cfg_save({
     "audio": bool(audio_on), "sistema": bool(sistema_on),
     "usar_janela": bool(usar_janela), "horas_op": [int(h) for h in horas_op],
     "stake": float(stake), "limite_on": bool(lim_on), "limite": float(lim_val),
+    "meta_on": bool(meta_on), "meta": float(meta_val),
     "notif": bool(notif_on),
     "f_corpo_on": bool(f_corpo_on), "f_corpo_min": int(f_corpo_min),
     "f_atr_on": bool(f_atr_on), "f_atr_lo": int(f_atr_lo), "f_atr_hi": int(f_atr_hi),
@@ -2554,9 +2570,18 @@ dentro_janela = (_h_br in set(horas_op)) if usar_janela else True
 # porque, uma vez atingido, nenhuma entrada nova deve ser gerada nem registrada.
 _perda_hoje = 0.0
 _bloqueio_perda = False
+_pnl_dia_atual = pnl_do_dia(hist_load(), br(now).date())
 if lim_on and lim_val > 0:
-    _perda_hoje = pnl_do_dia(hist_load(), br(now).date())
+    _perda_hoje = _pnl_dia_atual
     _bloqueio_perda = _perda_hoje <= -abs(lim_val)
+# TAKE-PROFIT DIÁRIO (item 3): bateu a meta, para de gerar entrada até amanhã.
+_meta_batida = bool(meta_on and meta_val > 0 and _pnl_dia_atual >= abs(meta_val))
+if _meta_batida and st.session_state.get("tg_meta") != br(now).date().isoformat():
+    st.session_state["tg_meta"] = br(now).date().isoformat()
+    telegram_send(f"🎯 <b>META DO DIA BATIDA</b> 🎯\n{TG_SEP}\n"
+                  f"💰 Resultado: +{nbf(_pnl_dia_atual, 2)}\n"
+                  f"⛔ Sem novas entradas até amanhã.\n"
+                  f"🧠 Lucro guardado é lucro real — sai da tela. 😄")
 
 COORTE = (f"{minutes}m·{min_force}"
           f"{'·2+' if only_conf else ''}·{mercado}")
@@ -2591,7 +2616,8 @@ _cb_ativo, _cb_msg, _cb_n_aval, _cb_w = (
     circuit_breaker(hist_load(), COORTE, int(cb_n), int(cb_pausa), PAYOUT)
     if cb_on else (False, "", 0, 0))
 
-operando = sistema_on and dentro_janela and not _bloqueio_perda and not _cb_ativo
+operando = (sistema_on and dentro_janela and not _bloqueio_perda
+            and not _cb_ativo and not _meta_batida)
 
 # EVENTOS DE RISCO NO TELEGRAM — os avisos que importam justamente quando você
 # NÃO está olhando a tela. Deduplicados por estado: o circuit breaker avisa uma
@@ -3055,6 +3081,7 @@ def record_and_resolve(entries, data, minutes, na_janela):
                          "prem_falhas": e.get("prem_falhas") or [],
                          "q_corpo": qualidade.get(nome, {}).get("corpo"),
                          "q_atrp": qualidade.get(nome, {}).get("atrp"),
+                         "q_adx": qualidade.get(nome, {}).get("adx"),
                          # instrumentação: permite medir depois se atraso derruba o acerto
                          "lag": (round(float(lag_ativo[nome]), 2)
                                  if nome in lag_ativo else None),
@@ -3101,7 +3128,9 @@ def record_and_resolve(entries, data, minutes, na_janela):
                         f"🎯 Confluência: {len(e['strats'])} estratégias ({_ests})"
                         f"{_qtxt}\n"
                         f"{TG_SEP}\n"
-                        f"⏱ Válido nos primeiros {ENTRY_WINDOW}s da vela{_cf}")
+                        f"⏱ Válido nos primeiros {ENTRY_WINDOW}s da vela{_cf}",
+                        botoes=[("✅ Executei",
+                                 f"exec|{nome}|{ck}|{minutes}|{e['dir']}")])
                 else:
                     telegram_send(
                         f"⚡ <b>KAIRO SINAL</b>\n"
@@ -3109,7 +3138,9 @@ def record_and_resolve(entries, data, minutes, na_janela):
                         f"{tg_flag(nome)} <b>{nome}</b> · {_dir_ico}\n"
                         f"💪 {FL.get(e['force'], e['force']).lower()} {_forca_ico} · 🎯 {_ests}\n"
                         f"⏰ <b>{hm(start)}</b> → 🏁 <b>{_exp}</b> (M{minutes})\n"
-                        f"⏱ Primeiros {ENTRY_WINDOW}s da vela{_cf}")
+                        f"⏱ Primeiros {ENTRY_WINDOW}s da vela{_cf}",
+                        botoes=[("✅ Executei",
+                                 f"exec|{nome}|{ck}|{minutes}|{e['dir']}")])
     for h in hist:                                        # apura o que já fechou
         if h["res"] is not None:
             continue
@@ -3640,6 +3671,9 @@ with tab_sig:
         if _bloqueio_perda:
             _motivo = (f"Limite de perda do dia atingido: {_perda_hoje:.2f} de "
                        f"−{abs(lim_val):.2f}. O sistema para até amanhã.")
+        elif _meta_batida:
+            _motivo = (f"🎯 Meta do dia batida: +{_pnl_dia_atual:.2f} de "
+                       f"+{abs(meta_val):.2f}. Lucro guardado — o sistema volta amanhã.")
         elif _cb_ativo:
             _motivo = f"Freio automático disparado. {_cb_msg}"
         elif not sistema_on:
