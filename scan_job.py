@@ -77,6 +77,56 @@ GIST_CFG = "kairo_config.json"
 GIST_STATE = "kairo_scanner_state.json"   # marcador do resumo diário (anti-duplo)
 
 
+def aplica_config_do_usuario(token, gid):
+    """
+    Lê a config do app (kairo_config.json) e aplica ao scanner:
+      • `estrategias`  -> quais estratégias gravar
+      • `horarios_ativo` -> grade da corretora editada por você
+
+    MOTIVO (bug relatado): a lista de estratégias vivia FIXA aqui. Trocar a
+    seleção no app (ex.: tirar F, pôr H) não chegava ao scanner, que continuava
+    gravando a estratégia antiga e sujando o histórico com entradas que você
+    não opera mais. Agora o app é a fonte da verdade também nisto.
+
+    A COORTE passa a carregar a assinatura das estratégias — assim, se a
+    seleção mudar de novo, os períodos ficam separáveis na análise em vez de
+    virarem uma mistura silenciosa.
+    """
+    global ESTRATEGIAS, COORTE
+    try:
+        r = requests.get(f"https://api.github.com/gists/{gid}", timeout=15,
+                         headers={"Authorization": f"Bearer {token}",
+                                  "Accept": "application/vnd.github+json"})
+        c = r.json().get("files", {}).get(GIST_CFG, {}).get("content")
+        cfg = json.loads(c) if c else {}
+    except Exception as e:
+        log(f"config do app indisponível ({type(e).__name__}) — padrões em uso.")
+        return
+
+    sel = cfg.get("estrategias")
+    if isinstance(sel, list) and sel:
+        validas = [s for s in sel if s in CHIP]
+        if validas:
+            if set(validas) != set(ESTRATEGIAS):
+                log(f"estratégias atualizadas pelo app: "
+                    f"{'+'.join(CHIP[s] for s in validas)} "
+                    f"(antes: {'+'.join(CHIP[s] for s in ESTRATEGIAS)})")
+            ESTRATEGIAS = validas
+    # assinatura das estratégias na coorte: períodos com seleções diferentes
+    # não se misturam na análise
+    _sig = "".join(sorted(CHIP[s] for s in ESTRATEGIAS))
+    COORTE = f"{TF_MIN}m·{FORCA_MIN}·{MERCADO}·[{_sig}]"
+
+    hor = cfg.get("horarios_ativo") or {}
+    aplicados = 0
+    for nome, bruto in hor.items():
+        if nome in GRADE and isinstance(bruto, dict) and bruto:
+            GRADE[nome] = bruto
+            aplicados += 1
+    if aplicados:
+        log(f"grade do usuário aplicada em {aplicados} ativo(s).")
+
+
 def aplica_grade_do_usuario(token, gid):
     """
     Sobrepõe à grade padrão o que o usuário EDITOU nos Ajustes do app
@@ -464,7 +514,7 @@ def main():
     if not (key and token and gid):
         log("faltam segredos (TWELVE_DATA_KEY / GH_TOKEN / GIST_ID)"); sys.exit(1)
 
-    aplica_grade_do_usuario(token, gid)      # grade editada no app vale aqui também
+    aplica_config_do_usuario(token, gid)     # estratégias + grade vindas do app
 
     hist = gist_load(token, gid)
     if hist is None:

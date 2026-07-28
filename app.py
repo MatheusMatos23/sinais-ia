@@ -1697,7 +1697,89 @@ def hist_load():
     return h
 
 
-def hist_save(h):
+def _chave_reg(r):
+    """Identidade de um registro: ativo + direção + vela + timeframe."""
+    return (r.get("asset"), r.get("dir"), r.get("ck"), r.get("tf"))
+
+
+def _merge_hist(base, extra):
+    """
+    Une duas listas de histórico sem perder ninguém.
+
+    Regra de conflito: vence quem tem RESULTADO (res != None); empatando,
+    vence o registro com mais campos preenchidos (o mais completo). Isso é o
+    que permite app e scanner escreverem no mesmo Gist sem se atropelarem.
+    """
+    por_chave = {}
+    for r in list(base) + list(extra):
+        k = _chave_reg(r)
+        ant = por_chave.get(k)
+        if ant is None:
+            por_chave[k] = r
+            continue
+        if (ant.get("res") is None) and (r.get("res") is not None):
+            por_chave[k] = r
+        elif (ant.get("res") is not None) == (r.get("res") is not None):
+            if len([v for v in r.values() if v not in (None, "")]) > \
+               len([v for v in ant.values() if v not in (None, "")]):
+                por_chave[k] = r
+    out = list(por_chave.values())
+    out.sort(key=lambda x: str(pd.Timestamp(x["ts"])))
+    return out
+
+
+def hist_sync(intervalo_s=60):
+    """
+    Traz para a sessão o que o SCANNER gravou no Gist depois que o app abriu.
+
+    Sem isto o app ficava com uma foto congelada do momento em que a aba foi
+    carregada: as entradas registradas pelo scanner (quando a aba estava em
+    segundo plano na virada) só apareciam depois de um F5.
+    """
+    if not HIST_REMOTO:
+        return
+    if (time.time() - st.session_state.get("hist_sync_t", 0.0)) < intervalo_s:
+        return
+    st.session_state["hist_sync_t"] = time.time()
+    remoto = gist_load()
+    if not remoto:
+        return
+    for r in remoto:
+        try:
+            r["ts"] = pd.Timestamp(r["ts"])
+        except Exception:
+            r["ts"] = None
+    remoto = [r for r in remoto if r.get("ts") is not None]
+    atual = st.session_state.get("hist", [])
+    novo = _merge_hist(atual, remoto)
+    if len(novo) != len(atual):
+        st.session_state["hist"] = novo
+
+
+def hist_save(h, substituir=False):
+    # MERGE ANTES DE GRAVAR (correção de perda de dados): o app escrevia a
+    # lista da memória por cima do Gist inteiro. Como a memória era uma foto do
+    # início da sessão, tudo que o SCANNER tivesse gravado no meio-tempo era
+    # apagado silenciosamente — a causa real de "o painel mostra, o histórico
+    # não tem". Agora relê o remoto e une antes de escrever.
+    #
+    # `substituir=True` PULA o merge: é o modo das operações destrutivas
+    # deliberadas (limpar tudo, expurgar por estratégia). Sem esta saída, o
+    # merge ressuscitaria no ato o que você acabou de mandar apagar.
+    if HIST_REMOTO and not substituir:
+        try:
+            remoto = gist_load() or []
+            for r in remoto:
+                try:
+                    r["ts"] = pd.Timestamp(r["ts"])
+                except Exception:
+                    r["ts"] = None
+            remoto = [r for r in remoto if r.get("ts") is not None]
+            if remoto:
+                h = _merge_hist(h, remoto)
+                st.session_state["hist"] = h
+        except Exception:
+            pass                      # falha na leitura não pode impedir a gravação
     out = [{**r, "ts": pd.Timestamp(r["ts"]).isoformat()} for r in h]
     try:
         with open(HIST_PATH, "w", encoding="utf-8") as f:
@@ -2257,6 +2339,11 @@ if auto_on:
 
 # Este rerun é o PRIMEIRO desta vela? É a única definição correta de "virada":
 # um carregamento manual dentro dos primeiros 20s não mede latência nenhuma.
+# Puxa do Gist o que o scanner gravou desde o último ciclo (no máx. 1x/min).
+# Fica ANTES de qualquer leitura do histórico para que painéis, placar do
+# Telegram e apuração enxerguem a mesma lista completa.
+hist_sync()
+
 _ck_now = candle_key(minutes)
 _ck_ant = st.session_state.get("ultimo_ck")
 primeiro_da_vela = (_ck_ant is not None) and (_ck_ant != _ck_now)
@@ -5347,8 +5434,41 @@ with tab_hist:
     with b3:
         if st.button("Limpar histórico", use_container_width=True):
             st.session_state["hist"] = []
-            hist_save([])
+            hist_save([], substituir=True)     # destrutivo: sem merge
+            st.session_state["hist_sync_t"] = time.time()   # evita re-sync imediato
             st.rerun()
+
+    # ---- EXPURGO POR ESTRATÉGIA ----
+    # Necessário porque o scanner rodou um tempo com a lista de estratégias
+    # FIXA no código: trocar a seleção no app não chegava até ele, e o histórico
+    # acumulou entradas de estratégias que você não opera mais. Remover essas
+    # linhas é legítimo (elas nunca pertenceram à coorte que você escolheu) —
+    # mas é destrutivo, então exige confirmação explícita e mostra a conta antes.
+    _sel_chips = {_short(s) for s in sel_strats}
+    _hist_atual = hist_load()
+    _fora = [h for h in _hist_atual
+             if h.get("strats") and not (set(h["strats"]) & _sel_chips)]
+    if _fora:
+        st.markdown('<div class="sect">Higiene da coorte</div>', unsafe_allow_html=True)
+        _res_fora = sum(1 for h in _fora if h.get("res") in ("ganhou", "perdeu"))
+        st.warning(
+            f"**{len(_fora)} registro(s)** usam apenas estratégias fora da sua "
+            f"seleção atual ({', '.join(sorted(_sel_chips))}) — "
+            f"{_res_fora} já resolvido(s). Eles entraram quando o scanner ainda "
+            f"não lia a sua escolha e **contaminam as taxas**.")
+        _ok_exp = st.checkbox("Confirmo remover esses registros do histórico",
+                              key="ck_expurgo")
+        if st.button("Remover registros fora da seleção", use_container_width=True,
+                     disabled=not _ok_exp):
+            _novo = [h for h in _hist_atual if h not in _fora]
+            st.session_state["hist"] = _novo
+            hist_save(_novo, substituir=True)
+            st.session_state["hist_sync_t"] = time.time()
+            st.success(f"{len(_fora)} registro(s) removido(s). "
+                       f"Restaram {len(_novo)}.")
+            st.rerun()
+        st.caption("Baixe o CSV antes — a remoção é definitiva e o Gist não "
+                   "guarda versões anteriores.")
     st.markdown('<div class="note">O histórico é gravado em arquivo no servidor, então '
                 '<b>sobrevive a recarregar a página</b>. Mas o disco do Streamlit Cloud é '
                 '<b>efêmero</b>: quando o app hiberna por inatividade ou recebe uma atualização, '
