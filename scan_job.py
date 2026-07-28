@@ -348,6 +348,33 @@ def _status_txt(hist):
             f"🤖 Coorte {COORTE} · scanner :01/:16/:31/:46")
 
 
+def backup_mensal(token, gid, hist, estado):
+    """
+    Uma vez por mês grava um snapshot completo (kairo_backup_AAAA-MM.json) no
+    próprio Gist. É o seguro do forward test: se o histórico principal for
+    corrompido ou apagado por engano, o mês não se perde. Devolve True se gravou.
+    """
+    if not hist:
+        return False
+    mes = datetime.now(timezone.utc).astimezone(BR_TZ).strftime("%Y-%m")
+    if estado.get("ultimo_backup") == mes:
+        return False
+    arq = f"kairo_backup_{mes}.json"
+    try:
+        r = requests.patch(f"https://api.github.com/gists/{gid}", timeout=30,
+                           headers={"Authorization": f"Bearer {token}",
+                                    "Accept": "application/vnd.github+json"},
+                           json={"files": {arq: {"content": json.dumps(
+                               hist, ensure_ascii=False)}}})
+        if r.status_code == 200:
+            log(f"backup mensal gravado: {arq} ({len(hist)} registros).")
+            estado["ultimo_backup"] = mes
+            return True
+    except Exception as e:
+        log(f"backup mensal falhou: {type(e).__name__}")
+    return False
+
+
 def responde_comandos(hist, estado):
     """
     Atende o comando /status enviado ao bot. Polling do getUpdates a cada
@@ -639,6 +666,7 @@ def main():
     estado = estado_load(token, gid)
     mudou = resumo_diario(hist, estado)
     mudou = resumo_semanal(hist, estado) or mudou
+    mudou = backup_mensal(token, gid, hist, estado) or mudou
     mudou = responde_comandos(hist, estado) or mudou
     if mudou:
         estado_save(token, gid, estado)

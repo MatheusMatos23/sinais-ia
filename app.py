@@ -1609,7 +1609,7 @@ CFG_PADRAO = {
     # filtro de regime + anti-concentração: LIGADOS por padrão (medidos)
     "f_adx_on": True, "f_adx_max": 20, "limite_exp": True,
     "f_news_on": False, "f_news_min": 15, "f_news_txt": "",
-    "cb_on": False, "cb_n": 30, "cb_pausa": 60,
+    "cb_on": True, "cb_n": 30, "cb_pausa": 60,   # freio LIGADO por padrão
     "radar": False, "premium": False,
     # Horário de negociação POR ATIVO, como a corretora pratica. O app já tinha
     # as sessões do mercado interbancário (Londres, Nova York...), mas isso não
@@ -2057,7 +2057,7 @@ with tab_cfg:
                  "que não tenho como saber.")
         st.markdown("**Freio automático**")
         cb_on = st.toggle("Pausar coorte que estiver perdendo",
-                          value=CFG.get("cb_on", False),
+                          value=CFG.get("cb_on", True),
                           help="Suspende automaticamente a configuração atual "
                                "quando as últimas N operações ficam abaixo do "
                                "breakeven com significância estatística.")
@@ -3630,7 +3630,8 @@ with tab_sig:
         for _e in cortados:
             _q[_e["bloq"]] = _q.get(_e["bloq"], 0) + 1
         _rot = {"corpo": "vela sem corpo", "atr": "volatilidade fora da faixa",
-                "noticia": "janela de notícia"}
+                "noticia": "janela de notícia", "tendencia": "mercado em tendência (ADX)",
+                "concentracao": "aposta repetida na mesma moeda"}
         _txt = ", ".join(f"{v} por {_rot.get(k, k)}" for k, v in sorted(_q.items()))
         st.caption(f"{len(cortados)} sinal(is) cortado(s) pelos filtros de "
                    f"qualidade: {_txt}. Continuam no histórico para medição.")
@@ -5220,7 +5221,9 @@ with tab_hist:
         if _cortes:
             _ROT = {"corpo": "cortado · vela sem corpo",
                     "atr": "cortado · volatilidade fora da faixa",
-                    "noticia": "cortado · janela de notícia"}
+                    "noticia": "cortado · janela de notícia",
+                    "tendencia": "cortado · mercado em tendência (ADX)",
+                    "concentracao": "cortado · aposta repetida na mesma moeda"}
             _por = {}
             for h in _cortes:
                 _por.setdefault(h["bloq"], []).append(h)
