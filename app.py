@@ -1362,10 +1362,22 @@ body.foco [data-testid="stTabs"] [role="tabpanel"]{min-height:0}
 .dot-prem{display:inline-block;width:6px;height:6px;border-radius:50%;
   background:var(--warn);margin-left:7px;vertical-align:middle;
   box-shadow:0 0 0 2px rgba(217,164,65,.18)}
-.selo-prem{display:inline-flex;align-items:center;gap:5px;font-size:.56rem;
-  letter-spacing:.11em;text-transform:uppercase;font-weight:700;color:var(--ink2);
-  background:var(--surf2);border:1px solid var(--line2);border-radius:999px;
-  padding:3px 9px;margin-left:8px}
+.selo-prem{display:inline-flex;align-items:center;gap:5px;font-size:.62rem;
+  letter-spacing:.11em;text-transform:uppercase;font-weight:800;color:#f5d98a;
+  background:rgba(212,175,55,.14);border:1px solid rgba(212,175,55,.55);
+  border-radius:999px;padding:3px 10px;margin-left:10px;vertical-align:middle}
+.selo-prem.mini{font-size:.68rem;padding:1px 6px;margin-left:6px;letter-spacing:0}
+
+/* PREMIUM em destaque: a entrada mais seletiva não pode passar despercebida.
+   Moldura dourada discreta (sem competir com verde/vermelho da direção, que
+   continua sendo o sinal principal — importante para leitura daltônica). */
+.hero.prem{border-color:rgba(212,175,55,.5);
+  box-shadow:0 0 0 1px rgba(212,175,55,.18) inset,0 10px 34px rgba(0,0,0,.34)}
+.hero.prem .h-tag.prem-tag{color:#f5d98a;background:rgba(212,175,55,.12);
+  border:1px solid rgba(212,175,55,.4);border-radius:999px;padding:4px 11px;
+  display:inline-block;font-weight:800}
+.card.prem{border-color:rgba(212,175,55,.42)}
+.card.prem .top{background:linear-gradient(90deg,rgba(212,175,55,.85),transparent)}
 
 /* ---------- RADAR ----------
    Linguagem visual PROPOSITALMENTE diferente da das entradas: borda tracejada
@@ -3006,10 +3018,14 @@ def record_and_resolve(entries, data, minutes, na_janela):
                 _dir_ico = "🟢" if h["dir"] == "COMPRA" else "🔴"
                 # PLACAR DO DIA + sequência: conta só o resolvido HOJE (Brasília)
                 # no timeframe atual, em ordem, para medir a série em andamento.
+                # MESMA CONTA DO HISTÓRICO (correção de inconsistência): conta
+                # TODO sinal resolvido do dia, venha do app ou do scanner, sem
+                # filtrar pelo timeframe selecionado na UI. Antes o placar usava
+                # `tf == minutes` e só o que estava em memória, então divergia da
+                # linha do dia na aba Histórico. Celular e app agora dizem o mesmo.
                 _dia_ = br(now).date()
                 _do_dia = sorted((_r for _r in hist
                                   if _r.get("res") in ("ganhou", "perdeu")
-                                  and _r.get("tf") == minutes
                                   and br(_r["ts"]).date() == _dia_),
                                  key=lambda _r: _r["ts"])
                 _dw = sum(1 for _r in _do_dia if _r["res"] == "ganhou")
@@ -3023,9 +3039,15 @@ def record_and_resolve(entries, data, minutes, na_janela):
                     else:
                         break
                 _tx_dia = f" ({_dw / (_dw + _dl_) * 100:.0f}%)".replace(".", ",") if (_dw + _dl_) else ""
-                _placar = f"📊 Hoje: ✅ {_dw} · ❌ {_dl_}{_tx_dia}"
+                # rótulo explícito: é o TOTAL do sistema no dia (app + scanner),
+                # exatamente a linha do dia na aba Histórico.
+                _placar = f"📊 Dia (sistema): ✅ {_dw} · ❌ {_dl_}{_tx_dia}"
                 if _pw or _pl:
                     _placar += f"\n💎 Premium: ✅ {_pw} · ❌ {_pl}"
+                _alert = sum(1 for _r in _do_dia if _r.get("tg"))
+                if _alert < len(_do_dia):
+                    _placar += (f"\n🔔 {_alert} de {len(_do_dia)} avisadas aqui "
+                                f"(resto registrado pelo scanner)")
                 if _streak >= 2:
                     _placar += f"\n🔥 {_streak} WINs seguidos!"
                 telegram_send(
@@ -3273,10 +3295,17 @@ def chips(e, big=False):
 def hero_html(e, cvela, tag_destaque="Melhor entrada"):
     cls = "buy" if e["dir"] == "COMPRA" else "sell"
     ar = "▲" if e["dir"] == "COMPRA" else "▼"
+    # PREMIUM VISÍVEL: moldura dourada + faixa própria. O selo discreto ao lado
+    # do par passava despercebido justamente na entrada que a medição
+    # out-of-sample mostrou ser a melhor (59,4% vs 52,6%).
+    _p = bool(e.get("premium"))
+    cls += " prem" if _p else ""
+    _tag = ('<div class="h-tag prem-tag">💎 ENTRADA PREMIUM · maior seletividade</div>'
+            if _p else f'<div class="h-tag">{tag_destaque}</div>')
     return f"""<div class="hero {cls}">
       <div class="hero-main">
-        <div class="h-tag">{tag_destaque}</div>
-        <div class="h-pair">{e["a"]["name"]}{'<span class="selo-prem">premium</span>' if e.get("premium") else ""}</div>
+        {_tag}
+        <div class="h-pair">{e["a"]["name"]}{'<span class="selo-prem">💎 premium</span>' if _p else ""}</div>
         <div class="h-dir"><span class="ar">{ar}</span>{e["dir"]}</div>
         <div class="fb">{bars(e["force"])}<span class="lbl2">Força {FL[e["force"]].lower()}</span></div>
       </div>
@@ -3294,11 +3323,14 @@ def card_html(e):
     aparecem por extenso. Com pares correlacionados (EUR/JPY e USD/JPY, por
     exemplo) é preciso poder comparar os dois de perto antes de escolher um."""
     cls = "buy" if e["dir"] == "COMPRA" else "sell"
+    if e.get("premium"):
+        cls += " prem"
     ar = "▲" if e["dir"] == "COMPRA" else "▼"
+    _sp = '<span class="selo-prem mini">💎</span>' if e.get("premium") else ""
     return (f'<a class="card {cls}" target="_self" href="{url_com(ativo=e["a"]["name"])}" '
             f'title="Abrir {e["a"]["name"]} em destaque">'
             f'<div class="top"></div><div class="body">'
-            f'<div class="row1"><span class="p">{e["a"]["name"]}</span>'
+            f'<div class="row1"><span class="p">{e["a"]["name"]}{_sp}</span>'
             f'<span class="px">{fmt_price(e["a"]["name"], e.get("px"))}</span></div>'
             f'<div class="d">{ar} {e["dir"]}</div>'
             f'<div class="fb">{bars(e["force"])}<span class="lbl2">{FL[e["force"]].lower()}</span></div>'
