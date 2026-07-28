@@ -1606,6 +1606,8 @@ CFG_PADRAO = {
     # ---- filtros de qualidade de entrada (cada um mede o próprio efeito) ----
     "f_corpo_on": False, "f_corpo_min": 35,        # corpo mínimo em % do range
     "f_atr_on": False, "f_atr_lo": 20, "f_atr_hi": 90,   # percentis de ATR aceitos
+    # filtro de regime + anti-concentração: LIGADOS por padrão (medidos)
+    "f_adx_on": True, "f_adx_max": 20, "limite_exp": True,
     "f_news_on": False, "f_news_min": 15, "f_news_txt": "",
     "cb_on": False, "cb_n": 30, "cb_pausa": 60,
     "radar": False, "premium": False,
@@ -2015,6 +2017,26 @@ with tab_cfg:
             "Faixa aceita (percentil do ATR nas últimas 200 velas)", 0, 100,
             (int(CFG.get("f_atr_lo", 20)), int(CFG.get("f_atr_hi", 90))),
             step=5, disabled=not f_atr_on)
+        # --- FILTRO DE REGIME DE TENDÊNCIA (o mais importante hoje) ---
+        f_adx_on = st.toggle("Operar só em mercado lateral (ADX)",
+                             value=CFG.get("f_adx_on", True),
+                             help="MEDIDO em 2.673 entradas reais out-of-sample: "
+                                  "suas estratégias são todas contra-tendência e "
+                                  "erram JUNTAS quando o mercado ganha direção. "
+                                  "Com ADX<20 + confluência: 57,35% e EV +6,09%, "
+                                  "e a pior sequência de losses cai de 9 para 5.")
+        f_adx_max = st.slider("Bloquear quando o ADX estiver acima de", 15, 40,
+                              int(CFG.get("f_adx_max", 20)), step=1,
+                              disabled=not f_adx_on,
+                              help="ADX alto = tendência forte = terreno onde o "
+                                   "fade morre. 20 foi o melhor valor medido.")
+        limite_exp = st.toggle("Limitar exposição por moeda (anti-concentração)",
+                               value=CFG.get("limite_exp", True),
+                               help="Seis VENDAs simultâneas em EUR/USD, EUR/JPY, "
+                                    "GBP/USD… não são seis apostas: é uma só, "
+                                    "repetida. Mantém a entrada mais forte por "
+                                    "moeda e marca as demais como concentração "
+                                    "(que continuam sendo gravadas e medidas).")
         f_news_on = st.toggle("Bloquear janelas de notícia de alto impacto",
                               value=CFG.get("f_news_on", False),
                               help="É o único filtro com causa óbvia: em release "
@@ -2240,6 +2262,8 @@ cfg_save({
     "notif": bool(notif_on),
     "f_corpo_on": bool(f_corpo_on), "f_corpo_min": int(f_corpo_min),
     "f_atr_on": bool(f_atr_on), "f_atr_lo": int(f_atr_lo), "f_atr_hi": int(f_atr_hi),
+    "f_adx_on": bool(f_adx_on), "f_adx_max": int(f_adx_max),
+    "limite_exp": bool(limite_exp),
     "f_news_on": bool(f_news_on), "f_news_min": int(f_news_min),
     "f_news_txt": str(f_news_txt), "cb_on": bool(cb_on), "cb_n": int(cb_n),
     "radar": bool(radar_on), "premium": bool(prem_on),
@@ -2499,8 +2523,10 @@ for a in scan_list:
     _serie_atr = d["atr"].tail(200).dropna()
     _atr_pct = (float((_serie_atr <= float(_u["atr"])).mean() * 100.0)
                 if len(_serie_atr) >= 30 and math.isfinite(float(_u["atr"])) else None)
+    _adx_v = float(_u["adx"]) if math.isfinite(float(_u.get("adx", float("nan")))) else None
     qualidade[a["name"]] = {"corpo": round(_corpo_pct, 1),
-                            "atrp": None if _atr_pct is None else round(_atr_pct, 1)}
+                            "atrp": None if _atr_pct is None else round(_atr_pct, 1),
+                            "adx": None if _adx_v is None else round(_adx_v, 1)}
     # Guardado para o radar reaproveitar: são as MESMAS velas fechadas já
     # buscadas, então o radar não custa requisição nenhuma além do preço spot.
     fechadas_por_ativo[a["name"]] = _fechadas
@@ -2614,6 +2640,13 @@ def motivo_corte(e):
     q = qualidade.get(e["a"]["name"], {})
     if noticia_ativa:
         return "noticia"
+    # FILTRO DE REGIME (medido out-of-sample em 2.673 entradas reais):
+    # as estratégias em uso são TODAS contra-tendência. Em mercado com direção
+    # forte elas erram JUNTAS — foi o que produziu a sequência de losses.
+    # ADX<20 (lateral) + confluência: 57,35% e EV +6,09%, com a pior sequência
+    # de losses caindo de 9 para 5. Fora do lateral, o EV vai a zero.
+    if f_adx_on and q.get("adx") is not None and q["adx"] >= float(f_adx_max):
+        return "tendencia"
     if f_corpo_on and q.get("corpo") is not None and q["corpo"] < float(f_corpo_min):
         return "corpo"
     if f_atr_on and q.get("atrp") is not None and not (
@@ -2650,6 +2683,30 @@ def avalia_premium(e):
 for _e in entries:
     _e["bloq"] = motivo_corte(_e)
     _e["premium"], _e["prem_falhas"] = avalia_premium(_e)
+
+# ---- LIMITE DE EXPOSIÇÃO POR MOEDA (concentração) ----
+# No print da sequência ruim havia 6 VENDAs na mesma vela: EUR/USD, EUR/JPY,
+# EUR/GBP, GBP/USD, AUD/USD, USD/JPY. Isso NÃO é diversificação — é a MESMA
+# aposta (dólar subindo) repetida seis vezes. Quando o movimento vai contra,
+# perde-se seis de uma vez. O corte mantém a entrada mais forte por moeda-base
+# e marca as demais como concentração, que continuam gravadas e apuradas para
+# medir depois se cortar foi acerto.
+if limite_exp:
+    # Cada entrada é uma aposta em DUAS moedas: uma sobe, outra cai.
+    # EUR/USD VENDA = EUR fraco + USD forte. Se já existe entrada apostando em
+    # EUR fraco (EUR/JPY VENDA) ou em USD forte (GBP/USD VENDA), é a MESMA
+    # aposta por outro caminho — bloqueia. Só a mais forte de cada moeda passa.
+    _usadas = {}
+    for _e in sorted([x for x in entries if not x["bloq"]],
+                     key=lambda x: (len(x["strats"]), FORCE_ORDER[x["force"]], x["score"]),
+                     reverse=True):
+        _b, _q = (_e["a"]["name"].split("/") + [""])[:2]
+        _forte, _fraca = (_b, _q) if _e["dir"] == "COMPRA" else (_q, _b)
+        if _usadas.get(("+", _forte)) or _usadas.get(("-", _fraca)):
+            _e["bloq"] = "concentracao"
+        else:
+            _usadas[("+", _forte)] = True
+            _usadas[("-", _fraca)] = True
 entries_todos = entries
 entries = [e for e in entries_todos if not e["bloq"]]
 cortados = [e for e in entries_todos if e["bloq"]]
