@@ -3199,8 +3199,13 @@ def record_and_resolve(entries, data, minutes, na_janela):
                 # `tf == minutes` e só o que estava em memória, então divergia da
                 # linha do dia na aba Histórico. Celular e app agora dizem o mesmo.
                 _dia_ = br(now).date()
+                # SÓ ENTRADAS DE VERDADE: o histórico guarda também o que os
+                # filtros CORTARAM (bloq != None) para medir o A/B depois — mas
+                # isso nunca foi entrada e não pode entrar no placar. Contá-las
+                # inflava o número no celular e não batia com o que você opera.
                 _do_dia = sorted((_r for _r in hist
                                   if _r.get("res") in ("ganhou", "perdeu")
+                                  and not _r.get("bloq")
                                   and br(_r["ts"]).date() == _dia_),
                                  key=lambda _r: _r["ts"])
                 _dw = sum(1 for _r in _do_dia if _r["res"] == "ganhou")

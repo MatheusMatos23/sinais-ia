@@ -229,7 +229,14 @@ def estado_save(token, gid, estado):
 
 
 def _placar(regs):
-    """(n, w, empates, prem_n, prem_w) de uma lista de registros."""
+    """
+    (n, w, empates, prem_n, prem_w) de uma lista de registros.
+
+    IGNORA o que os filtros bloquearam (bloq != None): esses registros existem
+    só para medir se o filtro ajuda (grupo de controle do A/B) — não são
+    operações. Contá-los inflava o resumo e divergia do que é operável.
+    """
+    regs = [h for h in regs if not h.get("bloq")]
     res = [h for h in regs if h.get("res") in ("ganhou", "perdeu")]
     w = sum(1 for h in res if h["res"] == "ganhou")
     emp = sum(1 for h in regs if h.get("res") == "empate")
@@ -246,7 +253,7 @@ def resumo_diario(hist, estado):
     hoje = agora_br.date().isoformat()
     if estado.get("ultimo_resumo") == hoje:
         return False
-    do_dia = [h for h in hist if _dia_br(h.get("ts")) == hoje]
+    do_dia = [h for h in hist if _dia_br(h.get("ts")) == hoje and not h.get("bloq")]
     res = [h for h in do_dia if h.get("res") in ("ganhou", "perdeu")]
     w = sum(1 for h in res if h["res"] == "ganhou")
     n = len(res)
@@ -293,7 +300,7 @@ def resumo_semanal(hist, estado):
     if estado.get("ultimo_semanal") == chave:
         return False
     ini = (agora_br.date() - timedelta(days=6)).isoformat()
-    sem = [h for h in hist if _dia_br(h.get("ts")) >= ini]
+    sem = [h for h in hist if _dia_br(h.get("ts")) >= ini and not h.get("bloq")]
     n, w, emp, np_, wp = _placar(sem)
     be = 1.0 / (1.0 + PAYOUT)
     if not n:
@@ -328,9 +335,9 @@ def _status_txt(hist):
     """Retrato do momento para o comando /status."""
     agora_br = datetime.now(timezone.utc).astimezone(BR_TZ)
     hoje = agora_br.date().isoformat()
-    do_dia = [h for h in hist if _dia_br(h.get("ts")) == hoje]
+    do_dia = [h for h in hist if _dia_br(h.get("ts")) == hoje and not h.get("bloq")]
     n, w, emp, np_, wp = _placar(do_dia)
-    pend = sum(1 for h in hist if h.get("res") is None)
+    pend = sum(1 for h in hist if h.get("res") is None and not h.get("bloq"))
     ult = max((str(h.get("ts")) for h in hist), default="—")
     if n:
         wr = w / n * 100
