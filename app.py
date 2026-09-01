@@ -1674,7 +1674,13 @@ def hist_load():
         return st.session_state["hist"]
     bruto = []
     remoto = gist_load()
-    if remoto:
+    if remoto is None and HIST_REMOTO:
+        # LEITURA FALHOU (≠ vazio). Marca a sessão como não-confiável: sem isso,
+        # o app assumia "não há histórico" e podia gravar por cima (incidente
+        # 01/09). Com a marca, hist_save recusa gravar remoto até a leitura voltar.
+        st.session_state["hist_leitura_falhou"] = True
+    elif remoto:
+        st.session_state.pop("hist_leitura_falhou", None)
         bruto.extend(remoto)
     try:
         if os.path.exists(HIST_PATH):
@@ -1765,6 +1771,35 @@ def hist_sync(intervalo_s=60):
 
 
 def hist_save(h, substituir=False):
+    # ===================== TRAVA ANTI-APAGAMENTO =====================
+    # INCIDENTE 01/09: o histórico (1.205 registros) foi sobrescrito por 1
+    # registro. Cadeia do erro: gist_load() devolve None tanto quando a LEITURA
+    # FALHA (401/timeout) quanto quando não há nada; hist_load tratava isso como
+    # "histórico vazio" e o merge do hist_save, ao ler de novo e falhar de novo,
+    # unia com lista vazia — gravando a memória vazia por cima de tudo.
+    #
+    # Agora: se a leitura do remoto FALHOU, não se grava remoto nenhum. E mesmo
+    # com leitura OK, uma redução drástica (>30% ou queda abaixo de 20 registros
+    # vindo de mais de 50) só passa com substituir=True, que é exclusivo das
+    # ações destrutivas conscientes (limpar/expurgar). Perder dado é irreversível;
+    # deixar de gravar um sinal, não.
+    if HIST_REMOTO and not substituir:
+        _rem_chk = gist_load()
+        if _rem_chk is None:
+            st.session_state["hist_bloqueado"] = (
+                "Não consegui LER o histórico remoto (token/rede). A gravação "
+                "foi bloqueada para não apagar o que está no Gist.")
+            return False
+        if len(_rem_chk) > 50 and len(h) < max(20, len(_rem_chk) * 0.7):
+            st.session_state["hist_bloqueado"] = (
+                f"Gravação bloqueada: tentativa de reduzir o histórico de "
+                f"{len(_rem_chk)} para {len(h)} registros sem confirmação.")
+            return False
+        st.session_state.pop("hist_bloqueado", None)
+    return _hist_save_real(h, substituir)
+
+
+def _hist_save_real(h, substituir=False):
     # MERGE ANTES DE GRAVAR (correção de perda de dados): o app escrevia a
     # lista da memória por cima do Gist inteiro. Como a memória era uma foto do
     # início da sessão, tudo que o SCANNER tivesse gravado no meio-tempo era
@@ -3351,6 +3386,13 @@ if _pend_exp and TD_KEY and (time.time() - st.session_state.get("res_fetch_t", 0
                 data[_n] = _d                        # dado mais fresco só p/ apuração
 
 hist_todos = record_and_resolve(entries_todos, data, minutes, window_open)
+# Aviso VISÍVEL de gravação bloqueada: silêncio aqui foi o que permitiu o
+# incidente passar despercebido. Se a trava anti-apagamento agir, você vê.
+if st.session_state.get("hist_bloqueado"):
+    st.error(f"⛔ **Gravação do histórico bloqueada** — "
+             f"{st.session_state['hist_bloqueado']} "
+             f"Os sinais desta sessão NÃO estão sendo salvos no Gist. "
+             f"Confira o token nos Secrets e recarregue a página.")
 hist = [h for h in hist_todos if not h.get("bloq")]
 hist_cortados = [h for h in hist_todos if h.get("bloq")]
 
@@ -5536,6 +5578,52 @@ with tab_hist:
             hist_save([], substituir=True)     # destrutivo: sem merge
             st.session_state["hist_sync_t"] = time.time()   # evita re-sync imediato
             st.rerun()
+
+    # ---- RESTAURAR DO BACKUP MENSAL ----
+    # O scanner grava um snapshot por mês no próprio Gist. Foi ele que salvou o
+    # histórico no incidente de 01/09. Aqui você recupera com um clique.
+    if HIST_REMOTO:
+        _bks = []
+        try:
+            _tok, _gid = _gh()
+            if _tok and _gid:
+                import requests as _rq
+                _r = _rq.get(f"https://api.github.com/gists/{_gid}", timeout=8,
+                             headers={"Authorization": f"Bearer {_tok}",
+                                      "Accept": "application/vnd.github+json"})
+                if _r.status_code == 200:
+                    for _n, _i in (_r.json().get("files") or {}).items():
+                        if _n.startswith("kairo_backup_"):
+                            try:
+                                _c = json.loads(_i.get("content") or "[]")
+                                _bks.append((_n, len(_c), _c))
+                            except Exception:
+                                pass
+        except Exception:
+            pass
+        if _bks:
+            _bks.sort(key=lambda x: x[1], reverse=True)
+            st.markdown('<div class="sect">Restaurar do backup</div>',
+                        unsafe_allow_html=True)
+            _op = st.selectbox(
+                "Snapshot disponível (o scanner grava um por mês)",
+                [f"{n} — {q} registros" for n, q, _ in _bks], key="sel_bk")
+            _esc = _bks[[f"{n} — {q} registros" for n, q, _ in _bks].index(_op)]
+            _atual = len(hist_load())
+            st.info(f"Histórico atual: **{_atual}** registro(s). "
+                    f"Backup escolhido: **{_esc[1]}**. A restauração UNE os dois "
+                    f"(nada do atual se perde) e regrava o Gist.")
+            if st.button("Restaurar agora", use_container_width=True,
+                         type="primary"):
+                _novo = _merge_hist(hist_load(), [
+                    {**r, "ts": pd.Timestamp(r["ts"])} for r in _esc[2]
+                    if r.get("ts")])
+                st.session_state["hist"] = _novo
+                _hist_save_real(_novo, substituir=True)   # ação consciente
+                st.session_state["hist_sync_t"] = time.time()
+                st.success(f"Restaurado: {len(_novo)} registro(s) "
+                           f"(antes {_atual}).")
+                st.rerun()
 
     # ---- EXPURGO POR ESTRATÉGIA ----
     # Necessário porque o scanner rodou um tempo com a lista de estratégias
