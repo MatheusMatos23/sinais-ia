@@ -514,11 +514,69 @@ def gist_load(token, gid):
         if r.status_code != 200:
             log(f"Gist load HTTP {r.status_code}")
             return None
-        c = r.json().get("files", {}).get(GIST_FILE, {}).get("content")
+        info = r.json().get("files", {}).get(GIST_FILE) or {}
+        c = info.get("content")
+        # TRUNCAMENTO DA API DO GIST - causa raiz das falhas de 01-02/09
+        # ("Unterminated string ... char 15189"). Acima de certo tamanho o
+        # campo content vem CORTADO (truncated=True); o raw_url entrega o
+        # arquivo inteiro. Sem isto o scanner aborta em TODA execucao assim
+        # que o historico cresce. Medido: size=811382, content=14983 chars.
+        if info.get("truncated") or c is None:
+            raw = info.get("raw_url")
+            if not raw:
+                log("Gist truncado e sem raw_url"); return None
+            rr = requests.get(raw, timeout=30,
+                              headers={"Authorization": f"Bearer {token}"})
+            if rr.status_code != 200:
+                log(f"raw do Gist HTTP {rr.status_code}"); return None
+            c = rr.text
         return json.loads(c) if c else []
     except Exception as e:
         log(f"erro lendo Gist: {e}")
         return None
+
+
+def _merge_por_chave(base, extra):
+    """
+    Une duas listas de historico sem perder registro.
+
+    MOTIVO: o scanner LE o Gist no inicio da execucao e GRAVA no fim. O app
+    grava ao vivo na virada da vela - exatamente a janela em que o scanner
+    roda. Sem esta uniao, tudo que o app gravou nesse intervalo era
+    sobrescrito pela lista que o scanner tinha em memoria.
+
+    Conflito: vence quem tem RESULTADO; empatando, vence o mais completo.
+    Mesma regra do _merge_hist do app, para os dois lados concordarem.
+    """
+    por_chave = {}
+    for r in list(base) + list(extra):
+        k = (r.get("asset"), r.get("dir"), r.get("ck"), r.get("tf"))
+        ant = por_chave.get(k)
+        if ant is None:
+            por_chave[k] = r
+            continue
+        if (ant.get("res") is None) and (r.get("res") is not None):
+            por_chave[k] = r
+        elif (ant.get("res") is not None) == (r.get("res") is not None):
+            if len([v for v in r.values() if v not in (None, "")]) > \
+               len([v for v in ant.values() if v not in (None, "")]):
+                por_chave[k] = r
+    out = list(por_chave.values())
+    out.sort(key=lambda x: str(x.get("ts")))
+    return out
+
+
+def gist_save_merge(token, gid, hist):
+    """Rele o remoto e une ANTES de gravar. Se a releitura falhar, NAO grava."""
+    remoto = gist_load(token, gid)
+    if remoto is None:
+        log("releitura do Gist falhou - gravacao cancelada para nao apagar nada.")
+        return False
+    unido = _merge_por_chave(hist, remoto)
+    if len(unido) < len(remoto):
+        log(f"ABORTADO: gravacao reduziria {len(remoto)} -> {len(unido)}.")
+        return False
+    return gist_save(token, gid, unido)
 
 
 def gist_save(token, gid, hist):
@@ -607,11 +665,28 @@ def main():
     # de quebra, limpa numa passada os sinais de madrugada/fim de semana que o
     # scanner antigo (sem grade) deixou no Gist.
     antes = len(hist)
-    hist = [h for h in hist
-            if aberto_na_corretora(h.get("asset"), pd.Timestamp(h.get("ts")))]
-    podados = antes - len(hist)
-    if podados:
-        log(f"podados {podados} registro(s) fora do horário da corretora.")
+    _mantidos, _fora = [], []
+    for h in hist:
+        try:
+            _ok = aberto_na_corretora(h.get("asset"), pd.Timestamp(h.get("ts")))
+        except Exception:
+            _ok = True          # registro com ts ilegivel NAO se apaga por duvida
+        (_mantidos if _ok else _fora).append(h)
+    # TRAVA DE PODA. Esta linha roda a cada 15 min e APAGA em definitivo. Se a
+    # grade vier errada (config do app fora do ar, parse quebrado, fuso), ela
+    # varreria o historico inteiro em silencio. Poda e faxina pontual: some
+    # dezenas de registros legados, nunca centenas. Acima do teto, mantem tudo
+    # e avisa - perder dado e irreversivel, deixar lixo no historico nao.
+    _TETO_PODA = max(25, int(antes * 0.02))
+    if len(_fora) > _TETO_PODA:
+        log(f"PODA ABORTADA: {len(_fora)} de {antes} registros cairiam "
+            f"(teto {_TETO_PODA}). Grade provavelmente errada - nada foi apagado.")
+        podados = 0
+    else:
+        hist = _mantidos
+        podados = len(_fora)
+        if podados:
+            log(f"podados {podados} registro(s) fora do horário da corretora.")
     vistos = {(h.get("asset"), h.get("ck"), h.get("tf")) for h in hist}
     dirty = podados > 0
 
@@ -697,7 +772,7 @@ def main():
         hist.sort(key=lambda h: str(h.get("ts")))
         if len(hist) > MAX_HIST:
             del hist[:len(hist) - MAX_HIST]
-        ok = gist_save(token, gid, hist)
+        ok = gist_save_merge(token, gid, hist)
         log(f"{novos} novo(s), {podados} podado(s). Gist {'OK' if ok else 'FALHOU'}. Total {len(hist)}.")
         if not ok:
             sys.exit(1)
@@ -714,7 +789,7 @@ def main():
     mudou = _m_cmd or mudou
     if _m_hist:
         # cliques em "✅ Executei" alteraram registros: persiste no Gist
-        ok = gist_save(token, gid, hist)
+        ok = gist_save_merge(token, gid, hist)
         log(f"marcações de execução sincronizadas. Gist {'OK' if ok else 'FALHOU'}.")
     if mudou:
         estado_save(token, gid, estado)
