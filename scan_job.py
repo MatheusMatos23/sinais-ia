@@ -48,9 +48,15 @@ ESTRATEGIAS = [
 FORCA_MIN = "FRACA"                 # grava tudo; a análise por força vem depois
 # FORWARD-ONLY: só registra velas que fecharam há no máximo este tempo. Assim o
 # scanner é um COMPLEMENTO (preenche o que o app perdeu na virada), NUNCA um
-# backtest — jamais reconstrói velas antigas. 45 min cobre ~3 velas M15, folga
-# suficiente para um atraso/pulo do cron do GitHub.
-JANELA_GAP_MIN = 45
+# backtest — jamais reconstrói velas antigas.
+# MEDIDO (histórico de runs do Actions, 01-02/09): o cron agendado NÃO roda a
+# cada 15 min como o workflow pede — o GitHub espaça execuções agendadas em
+# repos de baixa atividade; gap real observado até 5h18min entre runs. Com
+# JANELA_GAP_MIN=45 quase todo esse intervalo ficava fora da janela e as velas
+# eram PERDIDAS para sempre (não é atraso, é ausência de registro). 360 min
+# cobre o pior gap medido com folga, sem custo extra de crédito (o outputsize
+# já buscava 250 velas; isto só muda quantas das que já vieram são aceitas).
+JANELA_GAP_MIN = 360
 PAYOUT = 0.85
 STAKE = 100.0
 MERCADO = "Só forex"
