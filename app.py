@@ -1508,7 +1508,26 @@ def gist_load(arquivo=GIST_FILE):
         if r.status_code != 200:
             st.session_state["gist_erro"] = f"HTTP {r.status_code} ao ler o Gist"
             return None
-        c = r.json().get("files", {}).get(arquivo, {}).get("content")
+        info = r.json().get("files", {}).get(arquivo) or {}
+        c = info.get("content")
+        # TRUNCAMENTO DA API DO GIST — a causa raiz do incidente de 01/09.
+        # Acima de certo tamanho a API devolve o campo `content` CORTADO e
+        # marca truncated=True. O json.loads estourava "Unterminated string",
+        # gist_load devolvia None, e None era lido como "histórico vazio":
+        # o app gravava vazio por cima de tudo e o scanner abortava.
+        # Medido em 02/09: size=811382, truncated=True, content=14983 chars.
+        # O raw_url entrega o arquivo INTEIRO.
+        if info.get("truncated") or c is None:
+            raw = info.get("raw_url")
+            if not raw:
+                st.session_state["gist_erro"] = "Gist truncado e sem raw_url"
+                return None
+            rr = requests.get(raw, timeout=15,
+                              headers={"Authorization": f"Bearer {tok}"})
+            if rr.status_code != 200:
+                st.session_state["gist_erro"] = f"HTTP {rr.status_code} no raw do Gist"
+                return None
+            c = rr.text
         return json.loads(c) if c else []
     except Exception as e:
         st.session_state["gist_erro"] = str(e)[:90]
@@ -5595,7 +5614,13 @@ with tab_hist:
                     for _n, _i in (_r.json().get("files") or {}).items():
                         if _n.startswith("kairo_backup_"):
                             try:
-                                _c = json.loads(_i.get("content") or "[]")
+                                # mesmo cuidado do gist_load: backup grande vem
+                                # truncado no campo `content`
+                                _ct = _i.get("content")
+                                if _i.get("truncated") or _ct is None:
+                                    _ct = _rq.get(_i.get("raw_url"), timeout=15,
+                                                  headers={"Authorization": f"Bearer {_tok}"}).text
+                                _c = json.loads(_ct or "[]")
                                 _bks.append((_n, len(_c), _c))
                             except Exception:
                                 pass
