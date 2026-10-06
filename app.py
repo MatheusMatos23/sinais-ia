@@ -51,6 +51,9 @@ from strategies import (STRATEGIES, MIN_SCORE, add_indicators, score_of, classif
 # scan_job.py) e podia divergir em silêncio. Fonte única agora:
 import grade_core
 from grade_core import GRADE_BULLEX_TXT, DIAS_SIG, DIAS_NOME
+# Ciclo 2: regra congelada, fonte única compartilhada com o scanner.
+from grade_core import (CICLO_TAG, CICLO_ESTRATEGIAS, CICLO_ROTULOS,
+                        ciclo2_motivo, ciclo2_sprt)
 
 # st.components.v1.html está depreciado e já passou da data de remoção
 # (01/06/2026). Usa st.iframe onde existir, mantendo o fallback para rodar
@@ -2319,6 +2322,24 @@ with tab_cfg:
     st.markdown(f'<table class="tbl" style="max-width:420px">'
                 f'<tr><th>Sessão</th><th>Janela (BRT)</th></tr>{linhas}</table>',
                 unsafe_allow_html=True)
+# ============ CICLO 2 — PROTOCOLO CONGELADO (início 06/10/2026) ============
+# Os widgets acima continuam existindo, mas durante o ciclo o que vale é isto.
+# Motivo: qualquer ajuste de filtro/estratégia/horário no meio do ciclo mistura
+# experimentos e apaga a única coisa que o Ciclo 2 produz — uma amostra limpa.
+# Os gates que PARAM a gravação (freio, meta, limite de perda, janela, sistema
+# off) enviesam o resultado (só gravaria depois de ganhar/perder), por isso
+# ficam desligados. Para encerrar o ciclo: CICLO2_ON = False (e novo ciclo/coorte).
+CICLO2_ON = True
+if CICLO2_ON:
+    TF = "15"
+    sel_strats = [s for s in STRATEGIES if CHIP.get(s) in CICLO_ESTRATEGIAS]
+    min_force, mercado = "FRACA", "Só forex"
+    only_conf = prem_on = False
+    sistema_on = True
+    usar_janela = lim_on = meta_on = False
+    f_corpo_on = f_atr_on = f_adx_on = f_news_on = False
+    limite_exp = cb_on = False
+    modo_horario, usar_hor_ativo = "bullex", True
 # Salva as preferências depois que todos os widgets existem. cfg_save só grava
 # quando algo mudou de fato, então isso não escreve em disco a cada rerun.
 cfg_save({
@@ -2638,7 +2659,8 @@ if _meta_batida and st.session_state.get("tg_meta") != br(now).date().isoformat(
                   f"🧠 Lucro guardado é lucro real — sai da tela. 😄")
 
 COORTE = (f"{minutes}m·{min_force}"
-          f"{'·2+' if only_conf else ''}·{mercado}")
+          f"{'·2+' if only_conf else ''}·{mercado}"
+          f"{'·' + CICLO_TAG if CICLO2_ON else ''}")
 
 # ---- freio automático por coorte ----
 # Dispara quando o LIMITE SUPERIOR de Wilson das últimas N operações desta mesma
@@ -2760,9 +2782,17 @@ def avalia_premium(e):
     return (not falhas), falhas
 
 
+# hora BRT da ABERTURA da vela de entrada (a mesma convenção da análise do Ciclo 1)
+_hora_c2 = br(pd.Timestamp(candle_key(minutes) * minutes * 60, unit="s")).hour
 for _e in entries:
     _e["bloq"] = motivo_corte(_e)
     _e["premium"], _e["prem_falhas"] = avalia_premium(_e)
+    if CICLO2_ON:
+        # CICLO 2: só a regra congelada é "entrada"; o resto vira controle (c2_*),
+        # gravado e apurado igual, porém sem alerta e fora do resultado.
+        _q2 = qualidade.get(_e["a"]["name"], {})
+        _e["bloq"] = ciclo2_motivo(_hora_c2, len(_e["strats"]),
+                                   _q2.get("corpo"), _q2.get("atrp"))
 
 # ---- LIMITE DE EXPOSIÇÃO POR MOEDA (concentração) ----
 # No print da sequência ruim havia 6 VENDAs na mesma vela: EUR/USD, EUR/JPY,
@@ -3080,6 +3110,7 @@ def hist_df(h):
         "premium_reprovou": ", ".join(r.get("prem_falhas") or []),
         "conflito": "sim" if r.get("conflito") else "",
         "corpo_pct": r.get("q_corpo", ""), "atr_percentil": r.get("q_atrp", ""),
+        "adx": r.get("q_adx", ""),
         # prova do resultado — para conferir contra o feed da corretora
         "apuracao_abertura": r.get("ap_open", ""), "apuracao_fech": r.get("ap_close", ""),
         "apuracao_var": r.get("ap_var", ""), "apuracao_fonte": r.get("ap_src", ""),
@@ -3714,6 +3745,12 @@ with tab_sig:
     # Sem este aviso, um filtro ligado deixaria a tela vazia sem explicação e
     # pareceria bug — foi exatamente assim que o gate de janela de entrada
     # confundiu antes.
+    if CICLO2_ON:
+        st.info("**CICLO 2 em andamento — protocolo congelado.** Só a regra aparece "
+                "como entrada: janela 06–13h (Brasília), 3+ estratégias na mesma "
+                "direção e vela com qualidade (corpo ≥ 35%, ATR entre p20 e p85). "
+                "Os demais sinais continuam gravados como controle, sem alerta. "
+                "Filtros, estratégias e horários estão travados até o veredito.")
     if noticia_ativa:
         st.markdown(
             f'<div class="win alert"><span class="pt"></span><div class="msg">'
@@ -3728,10 +3765,15 @@ with tab_sig:
             _q[_e["bloq"]] = _q.get(_e["bloq"], 0) + 1
         _rot = {"corpo": "vela sem corpo", "atr": "volatilidade fora da faixa",
                 "noticia": "janela de notícia", "tendencia": "mercado em tendência (ADX)",
-                "concentracao": "aposta repetida na mesma moeda"}
+                "concentracao": "aposta repetida na mesma moeda",
+                **CICLO_ROTULOS}
         _txt = ", ".join(f"{v} por {_rot.get(k, k)}" for k, v in sorted(_q.items()))
-        st.caption(f"{len(cortados)} sinal(is) cortado(s) pelos filtros de "
-                   f"qualidade: {_txt}. Continuam no histórico para medição.")
+        if CICLO2_ON:
+            st.caption(f"{len(cortados)} sinal(is) fora da regra do Ciclo 2, gravados "
+                       f"como controle e sem alerta: {_txt}.")
+        else:
+            st.caption(f"{len(cortados)} sinal(is) cortado(s) pelos filtros de "
+                       f"qualidade: {_txt}. Continuam no histórico para medição.")
 
     if not operando:
         if _bloqueio_perda:
@@ -4905,7 +4947,11 @@ with tab_hist:
         with f5:
             _coortes = sorted({h.get("coorte") for h in hist if h.get("coorte")})
             f_coo = st.multiselect(
-                "Configuração", _coortes, default=[],
+                "Configuração", _coortes,
+                # durante o Ciclo 2 a tela abre só no ciclo corrente; limpar o
+                # filtro mostra o histórico inteiro (Ciclo 1 incluído)
+                default=([c for c in _coortes if str(c).endswith("·" + CICLO_TAG)]
+                         if CICLO2_ON else []),
                 placeholder="Todas as configurações",
                 help="Cada sinal guarda a configuração que estava ativa quando foi "
                      "gerado. Comparar taxas entre configurações diferentes não "
@@ -5144,6 +5190,39 @@ with tab_hist:
                     f'<td class="n mono">{_lo*100:.0f}–{pct(_hi*100, 0)}</td>'
                     f'<td><span class="verd {cls}">{t}</span></td></tr>')
 
+        # ---- CICLO 2: placar da regra congelada (ignora os filtros da tela) ----
+        if CICLO2_ON:
+            _c2 = [h for h in hist_todos
+                   if str(h.get("coorte", "")).endswith("·" + CICLO_TAG)]
+            if _c2:
+                _regra = [h for h in _c2 if not h.get("bloq")]
+                _lin2 = linha_ic("REGRA do Ciclo 2 (o que se opera)", "regra",
+                                 _regra, payout_do(_regra) if _regra else PAYOUT)
+                _grp2 = {}
+                for h in _c2:
+                    if h.get("bloq"):
+                        _grp2.setdefault(h["bloq"], []).append(h)
+                for k in ("c2_sem_qualidade", "c2_sem_confluencia", "c2_fora_janela"):
+                    if k in _grp2:
+                        _lin2 += linha_ic(CICLO_ROTULOS[k], "controle", _grp2[k],
+                                          payout_do(_grp2[k]))
+                st.markdown('<div class="sect">Ciclo 2 — a regra congelada está '
+                            'funcionando?</div>', unsafe_allow_html=True)
+                st.markdown(f'<table class="tbl"><tr><th>Recorte</th><th>Tipo</th>'
+                            f'<th>Acerto · W/L</th><th>IC95</th><th>Veredito</th>'
+                            f'</tr>{_lin2}</table>', unsafe_allow_html=True)
+                _fw = sum(1 for h in _regra if h["res"] == "ganhou")
+                _fl = sum(1 for h in _regra if h["res"] == "perdeu")
+                _llr, _lim_a, _lim_b, _st2 = ciclo2_sprt(_fw, _fl)
+                st.caption(
+                    f"Placar sequencial da regra (60% contra 54%): {_fw}W/{_fl}L · "
+                    f"LLR {_llr:+.2f} · aprova em ≥ {_lim_a:.2f}, reprova em "
+                    f"≤ {_lim_b:.2f} → {_st2}. A regra só vale se superar os "
+                    f"controles abaixo dela (se o controle acerta igual, o que "
+                    f"funciona é o horário/mercado, não a regra). Ciclo congelado: "
+                    f"nada de ajuste antes do veredito. Operações com a corretora: "
+                    f"marque “executei”, senão o resultado continua sendo só papel.")
+
         # ---- por estratégia (um sinal com 2 estratégias conta nas duas) ----
         por_est = {}
         for h in vis:
@@ -5317,13 +5396,15 @@ with tab_hist:
         # acertava menos do que o que passou?". Se o cortado acerta MAIS, o
         # filtro está tirando dinheiro do seu bolso, e sem esta tabela isso
         # ficaria invisível — o corte simplesmente não apareceria em lugar nenhum.
-        _cortes = [h for h in hist_cortados if h.get("bloq")]
+        _cortes = [h for h in hist_cortados if h.get("bloq")
+                   and (not f_coo or h.get("coorte") in f_coo)]
         if _cortes:
             _ROT = {"corpo": "cortado · vela sem corpo",
                     "atr": "cortado · volatilidade fora da faixa",
                     "noticia": "cortado · janela de notícia",
                     "tendencia": "cortado · mercado em tendência (ADX)",
-                    "concentracao": "cortado · aposta repetida na mesma moeda"}
+                    "concentracao": "cortado · aposta repetida na mesma moeda",
+                    **CICLO_ROTULOS}
             _por = {}
             for h in _cortes:
                 _por.setdefault(h["bloq"], []).append(h)
