@@ -31,6 +31,8 @@ import requests
 from strategies import add_indicators, score_of, classify, wilson_ci
 # Auditoria C-01: grade da corretora em fonte ÚNICA, compartilhada com o app.
 from grade_core import GRADE_BULLEX_TXT, parse_grade, aberto_em
+# Ciclo 2: regra congelada compartilhada com o app (fonte única).
+from grade_core import CICLO_TAG, CICLO_ESTRATEGIAS, ciclo2_motivo
 
 BR_TZ = ZoneInfo("America/Sao_Paulo")
 
@@ -605,7 +607,7 @@ def sinais_da_vela(fechadas):
     {dir, force, strats} e as métricas de qualidade da última vela.
     """
     if len(fechadas) < 60:
-        return [], None, None
+        return [], None, None, None
     d = add_indicators(fechadas)
     agg = {}
     for nm in ESTRATEGIAS:
@@ -653,6 +655,24 @@ def avalia_premium(strats, corpo, atrp):
     return (not falhas), falhas
 
 
+def trava_ciclo2():
+    """
+    CICLO 2 — protocolo congelado. Roda DEPOIS de aplica_config_do_usuario e
+    sobrescreve o que o app/Gist tiver pedido: estratégias fixas (B,E,G,H,I,J,K),
+    filtro ADX desligado (vira só marcação em q_adx) e coorte única "…·C2".
+    Mesmo se a config do Gist estiver indisponível, o protocolo vale — sem isso o
+    default ADX_MAX=20 voltaria a cortar sinais em silêncio.
+    A coorte NÃO leva assinatura das estratégias: o conjunto é fixo no ciclo e o
+    app grava a MESMA string, então as duas fontes caem na mesma coorte.
+    """
+    global ESTRATEGIAS, ADX_MAX, COORTE
+    ESTRATEGIAS = [n for n, c in CHIP.items() if c in CICLO_ESTRATEGIAS]
+    ADX_MAX = None
+    COORTE = f"{TF_MIN}m·{FORCA_MIN}·{MERCADO}·{CICLO_TAG}"
+    log(f"CICLO 2 ativo: {'+'.join(CHIP[s] for s in ESTRATEGIAS)} · ADX só marcação · "
+        f"coorte {COORTE}")
+
+
 def main():
     key = os.environ.get("TWELVE_DATA_KEY", "")
     token = os.environ.get("GH_TOKEN", "")
@@ -661,6 +681,7 @@ def main():
         log("faltam segredos (TWELVE_DATA_KEY / GH_TOKEN / GIST_ID)"); sys.exit(1)
 
     aplica_config_do_usuario(token, gid)     # estratégias + grade vindas do app
+    trava_ciclo2()                           # protocolo congelado sobrepõe a config
 
     hist = gist_load(token, gid)
     if hist is None:
@@ -739,6 +760,8 @@ def main():
             sinais, corpo, atrp, adx_v = sinais_da_vela(fechadas)
             _bloq_regime = ("tendencia" if (ADX_MAX is not None and adx_v is not None
                                             and adx_v >= ADX_MAX) else None)
+            # hora BRT da ABERTURA da vela de entrada (a mesma da análise do Ciclo 1)
+            _hora_brt = pd.Timestamp(t_abre).tz_localize("UTC").tz_convert(BR_TZ).hour
             if not sinais:
                 continue
             row = df.loc[t_abre]
@@ -756,12 +779,14 @@ def main():
                 else:
                     r_final = "empate"
                 prem, falhas = avalia_premium(s["strats"], corpo, atrp)
+                # CICLO 2: None = sinal da regra; senão, grupo de controle (c2_*)
+                _bloq_c2 = ciclo2_motivo(_hora_brt, len(s["strats"]), corpo, atrp)
                 hist.append({
                     "ck": ck, "ts": t_abre.isoformat(), "asset": nome, "dir": s["dir"],
                     "force": s["force"], "strats": [CHIP.get(x, x) for x in s["strats"]],
                     "tf": TF_MIN, "res": r_final, "janela": True,
                     "cfg_forca": FORCA_MIN, "cfg_conf": False, "cfg_mkt": MERCADO,
-                    "coorte": COORTE, "bloq": _bloq_regime,
+                    "coorte": COORTE, "bloq": (_bloq_c2 or _bloq_regime),
                     "premium": bool(prem), "prem_ver": PREMIUM_VER, "prem_falhas": falhas,
                     "q_corpo": corpo, "q_atrp": atrp, "q_adx": adx_v,
                     "lag": 0.0, "src": "twelvedata (scanner)",
