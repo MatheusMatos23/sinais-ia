@@ -187,3 +187,75 @@ def horas_operaveis(grade, nomes):
                 else:                      # atravessa a meia-noite
                     horas |= set(range(h_i, 24)) | set(range(0, h_f + 1))
     return horas if com_grade else set(range(24))
+
+
+# =============================================================================
+# CICLO 2 — PROTOCOLO CONGELADO (início 06/10/2026)
+# -----------------------------------------------------------------------------
+# Fonte ÚNICA da regra: app.py e scan_job.py importam daqui, então os dois
+# gravadores jamais discordam sobre o que é "sinal da regra" e o que é "controle".
+#
+# Origem: análise do Ciclo 1 (3.325 registros, 28/07–05/10/2026). A regra abaixo
+# é uma HIPÓTESE garimpada no Ciclo 1 (65,1% em 255 sinais, mas 70% na 1ª metade
+# e 63% na 2ª; o garimpo infla o número). O Ciclo 2 existe para testá-la em dado
+# NOVO, sem mexer em nada até o veredito. Nenhuma promessa de acerto.
+#
+# Como funciona: TODO sinal continua sendo gravado e apurado. O que não é da
+# regra recebe `bloq = c2_*` (grupo de CONTROLE): não conta no resultado, não
+# gera alerta, mas é medido — é ele que diz se a regra supera o resto.
+# =============================================================================
+CICLO_TAG = "C2"
+CICLO_ESTRATEGIAS = ("B", "E", "G", "H", "I", "J", "K")   # F fica de fora (inativa)
+CICLO_HORA_INI, CICLO_HORA_FIM = 6, 13     # hora cheia BRT, inclusive: 06:00–13:59
+CICLO_MIN_ESTRAT = 3                        # estratégias concordando na mesma direção
+CICLO_CORPO_MIN = 35.0                      # corpo da vela >= 35% do range
+CICLO_ATR_LO, CICLO_ATR_HI = 20.0, 85.0     # percentil de ATR aceito
+
+CICLO_ROTULOS = {
+    "c2_fora_janela": "controle · fora da janela 06–13h",
+    "c2_sem_confluencia": "controle · janela 06–13h, menos de 3 estratégias",
+    "c2_sem_qualidade": "controle · janela 06–13h, 3+ estratégias, vela sem qualidade",
+}
+
+
+def ciclo2_motivo(hora_brt, n_estr, corpo, atrp):
+    """
+    None  -> sinal da REGRA do Ciclo 2 (é o que se opera e o que conta no resultado).
+    texto -> grupo de CONTROLE (gravado e apurado, mas fora do resultado/alertas).
+    Os grupos formam uma partição: cada sinal cai em exatamente um.
+    Métrica ausente (None) não reprova — mesmo critério do Premium do scanner.
+    """
+    try:
+        h = int(hora_brt)
+    except Exception:
+        return "c2_fora_janela"
+    if not (CICLO_HORA_INI <= h <= CICLO_HORA_FIM):
+        return "c2_fora_janela"
+    if n_estr < CICLO_MIN_ESTRAT:
+        return "c2_sem_confluencia"
+    if corpo is not None and corpo < CICLO_CORPO_MIN:
+        return "c2_sem_qualidade"
+    if atrp is not None and not (CICLO_ATR_LO <= atrp <= CICLO_ATR_HI):
+        return "c2_sem_qualidade"
+    return None
+
+
+def ciclo2_sprt(w, l, p0=0.54, p1=0.60, alpha=0.05, beta=0.20):
+    """
+    Teste sequencial de Wald (SPRT): H0 = acerto p0 (breakeven ~54%) contra
+    H1 = p1 (60%). Retorna (LLR, limite_aprova, limite_reprova, status).
+    status: 'aprovada' | 'reprovada' | 'continua testando'. Risco de falso
+    positivo alpha, de falso negativo beta. Vale para a sequência da REGRA, na
+    ordem em que os sinais fecharam — não para um recorte escolhido depois.
+    """
+    import math
+    llr = w * math.log(p1 / p0) + l * math.log((1 - p1) / (1 - p0))
+    a = math.log((1 - beta) / alpha)
+    b = math.log(beta / (1 - alpha))
+    if llr >= a:
+        st = "aprovada"
+    elif llr <= b:
+        st = "reprovada"
+    else:
+        st = "continua testando"
+    return llr, a, b, st
