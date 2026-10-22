@@ -2332,7 +2332,9 @@ with tab_cfg:
 CICLO2_ON = True
 if CICLO2_ON:
     TF = "15"
-    sel_strats = [s for s in STRATEGIES if CHIP.get(s) in CICLO_ESTRATEGIAS]
+    # ATENÇÃO: CHIP do app mapeia nome -> rótulo de exibição ("G · Vela extrema"),
+    # não -> letra. A letra é o que vem antes do "·" no nome da estratégia.
+    sel_strats = [s for s in STRATEGIES if s.split("·")[0].strip() in CICLO_ESTRATEGIAS]
     min_force, mercado = "FRACA", "Só forex"
     only_conf = prem_on = False
     sistema_on = True
