@@ -58,7 +58,7 @@ FORCA_MIN = "FRACA"                 # grava tudo; a análise por força vem depo
 # eram PERDIDAS para sempre (não é atraso, é ausência de registro). 360 min
 # cobre o pior gap medido com folga, sem custo extra de crédito (o outputsize
 # já buscava 250 velas; isto só muda quantas das que já vieram são aceitas).
-JANELA_GAP_MIN = 360
+JANELA_GAP_MIN = 480
 PAYOUT = 0.85
 STAKE = 100.0
 MERCADO = "Só forex"
