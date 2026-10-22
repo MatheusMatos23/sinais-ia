@@ -223,7 +223,12 @@ def hm_exp(ts, minutos):
 # preenche velas recém-fechadas que o app tenha perdido por estar fechado na
 # virada. Ambos deduplicam por (ativo, vela, tf), então não há registro dobrado.
 # Deixar False mantém o app como gravador principal.
-SCANNER_ATIVO = False
+# CICLO 2: o scanner é o ÚNICO gravador da coorte. O app lê dado com atraso (16–27 min
+# medidos em 22/10) e, no Ciclo 1, as linhas gravadas ao vivo pelo app acertaram 47,2%
+# contra ~52% no resto. Deixar o app gravar contaminaria o Ciclo 2 e, como a
+# deduplicação é por vela, ainda tomaria o lugar da linha limpa do scanner.
+# O app continua mostrando entradas e apurando resultados; só não insere sinais.
+SCANNER_ATIVO = True
 
 PREMIUM_VER = 1
 PREMIUM_REGRAS = [
